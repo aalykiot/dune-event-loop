@@ -25,6 +25,7 @@ enum Action {
 }
 
 enum Event {
+    Interrupt,
     ThreadPool(Index, TaskResult),
 }
 
@@ -65,8 +66,14 @@ impl EventLoop {
     pub fn handle(&self) -> LoopHandle {
         LoopHandle {
             index: self.index.clone(),
-            dispatcher: self.action_dispatcher.clone(),
+            actions: self.action_dispatcher.clone(),
             actions_queue_empty: self.action_queue_empty.clone(),
+        }
+    }
+
+    pub fn interrupt_handle(&self) -> LoopInterruptHandle {
+        LoopInterruptHandle {
+            events: self.event_dispatcher.clone(),
         }
     }
 
@@ -113,7 +120,7 @@ impl EventLoop {
 
     fn run_poll(&mut self) {
         // Based on what resources the event-loop is currently running will decide
-        // how long we should wait on the poll phase.
+        // how long we should wait on the this phase.
         let timeout = match self.timer_queue.iter().next() {
             Some((t, _)) => *t - Instant::now(),
             None if self.pending_tasks > 0 => Duration::MAX,
@@ -122,6 +129,7 @@ impl EventLoop {
 
         if let Ok(event) = self.event_queue.recv_timeout(timeout) {
             match event {
+                Event::Interrupt => return,
                 Event::ThreadPool(index, result) => self.run_task_callback(index, result),
             }
             self.pending_tasks -= 1;
@@ -177,18 +185,20 @@ impl Default for EventLoop {
 
 pub struct LoopHandle {
     index: Rc<Cell<Index>>,
-    dispatcher: Rc<mpsc::Sender<Action>>,
+    actions: Rc<mpsc::Sender<Action>>,
     actions_queue_empty: Rc<Cell<bool>>,
 }
 
 #[allow(dead_code)]
 impl LoopHandle {
+    /// Returns the next available resource index.
     pub fn index(&self) -> Index {
         let index = self.index.get();
         self.index.set(index + 1);
         index
     }
 
+    /// Schedules a new timer to the event-loop.
     pub fn timer<F>(&self, delay: u64, cb: F) -> Index
     where
         F: FnOnce() + 'static,
@@ -196,7 +206,7 @@ impl LoopHandle {
         let index = self.index();
         let expires_at = Duration::from_millis(delay);
 
-        self.dispatcher
+        self.actions
             .send(Action::NewTimer(index, expires_at, Box::new(cb)))
             .unwrap();
 
@@ -205,11 +215,13 @@ impl LoopHandle {
         index
     }
 
+    /// Removes a scheduled timer from the event-loop.
     pub fn remove_timer(&self, index: &Index) {
-        self.dispatcher.send(Action::RemoveTimer(*index)).unwrap();
+        self.actions.send(Action::RemoveTimer(*index)).unwrap();
         self.actions_queue_empty.set(false);
     }
 
+    /// Spawns a new async task without blocking the main thread.
     pub fn spawn<F, U>(&self, task: F, task_cb: Option<U>) -> Index
     where
         F: FnOnce() -> TaskResult + Send + 'static,
@@ -224,7 +236,7 @@ impl LoopHandle {
             None => None,
         };
 
-        self.dispatcher
+        self.actions
             .send(Action::SpawnTask(index, Box::new(task), task_cb))
             .unwrap();
 
@@ -234,22 +246,40 @@ impl LoopHandle {
     }
 }
 
+pub struct LoopInterruptHandle {
+    events: Arc<Mutex<mpsc::Sender<Event>>>,
+}
+
+impl LoopInterruptHandle {
+    // Interrupts the poll phase of the event-loop.
+    pub fn interrupt(&self) {
+        self.events.lock().unwrap().send(Event::Interrupt).unwrap();
+    }
+}
+
 fn main() {
     let mut event_loop = EventLoop::new();
     let handle = event_loop.handle();
+    let handle2 = event_loop.interrupt_handle();
 
     handle.spawn(
         || {
-            std::thread::sleep(Duration::from_millis(2500));
+            std::thread::sleep(Duration::from_millis(5000));
             println!("Hello, world!");
             None
         },
         None::<fn(_)>,
     );
 
-    handle.timer(1000, || println!("Hello!"));
+    std::thread::spawn(move || {
+        println!("Calling interrupt...");
+        handle2.interrupt();
+    })
+    .join()
+    .unwrap();
 
     while event_loop.has_pending_events() {
         event_loop.tick();
+        println!("This should run after the poll phase");
     }
 }
