@@ -221,7 +221,7 @@ impl LoopHandle {
         self.actions_queue_empty.set(false);
     }
 
-    /// Spawns a new async task without blocking the main thread.
+    /// Spawns a new task without blocking the main thread.
     pub fn spawn<F, U>(&self, task: F, task_cb: Option<U>) -> Index
     where
         F: FnOnce() -> TaskResult + Send + 'static,
