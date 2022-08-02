@@ -1,5 +1,5 @@
 [package]
-name = "dune-loop"
+name = "dune-event-loop"
 version = "0.1.0"
 edition = "2021"
 
