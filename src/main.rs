@@ -59,7 +59,9 @@ struct TimerWrap {
 
 impl Resource for TimerWrap {}
 
-struct TaskWrap(Option<Box<dyn FnOnce(TaskResult) + 'static>>);
+struct TaskWrap {
+    inner: Option<Box<dyn FnMut(TaskResult) + 'static>>,
+}
 
 impl Resource for TaskWrap {}
 
@@ -142,7 +144,7 @@ impl EventLoop {
     }
 
     fn run_timers(&mut self) {
-        // Note: We use this intermidiate vector so we don't have Rust complaining
+        // Note: We use this intermediate vector so we don't have Rust complaining
         // about holding multiple references.
         let timers_to_remove: Vec<Instant> = self
             .timer_queue
@@ -202,8 +204,7 @@ impl EventLoop {
             None => return,
         };
 
-        if task_wrap.0.is_some() {
-            let callback = task_wrap.0.take().unwrap();
+        if let Some(callback) = task_wrap.inner.as_mut() {
             (callback)(result);
         }
     }
@@ -291,18 +292,18 @@ impl LoopHandle {
     pub fn spawn<F, U>(&self, task: F, task_cb: Option<U>) -> Index
     where
         F: FnOnce() -> TaskResult + Send + 'static,
-        U: FnOnce(TaskResult) + 'static,
+        U: FnMut(TaskResult) + 'static,
     {
         let index = self.index();
 
         // Note: I tried to use `.and_then` instead of this ugly match statement but Rust complains
         // about mismatch types having no idea why.
-        let task_cb: Option<Box<dyn FnOnce(TaskResult)>> = match task_cb {
+        let task_cb: Option<Box<dyn FnMut(TaskResult)>> = match task_cb {
             Some(cb) => Some(Box::new(cb)),
             None => None,
         };
 
-        let task_wrap = TaskWrap(task_cb);
+        let task_wrap = TaskWrap { inner: task_cb };
 
         self.actions
             .send(Action::SpawnTask(index, Box::new(task), task_wrap))
