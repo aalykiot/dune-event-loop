@@ -8,3 +8,4 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.58"
 threadpool = "1.8.1"
+downcast-rs = { version = "1.2.0", default-features = false }

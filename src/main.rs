@@ -1,7 +1,7 @@
 use anyhow::Result;
+use downcast_rs::impl_downcast;
+use downcast_rs::Downcast;
 use std::any::type_name;
-use std::any::Any;
-use std::any::TypeId;
 use std::borrow::Cow;
 use std::cell::Cell;
 use std::collections::BTreeMap;
@@ -19,37 +19,14 @@ type Index = u32;
 type TaskResult = Option<Result<Vec<u8>>>;
 
 /// All objects that are tracked by the event-loop should implement the `Resource` trait.
-pub trait Resource: Any + 'static {
+pub trait Resource: Downcast + 'static {
     /// Returns a string representation of the resource.
     fn name(&self) -> Cow<str> {
         type_name::<Self>().into()
     }
 }
 
-impl dyn Resource {
-    #[inline(always)]
-    fn is<T: Resource>(&self) -> bool {
-        self.type_id() == TypeId::of::<T>()
-    }
-
-    /// Returns some reference to the inner value if it is of type T.
-    #[inline(always)]
-    #[allow(clippy::borrowed_box)]
-    pub fn downcast_ref<'a, T: Resource>(self: &Box<Self>) -> &'a T {
-        assert!(self.is::<T>());
-        let ptr = self as *const Box<_> as *const Box<T>;
-        unsafe { &*ptr }
-    }
-
-    /// Returns some mutable reference to the inner value if it is of type T.
-    #[inline(always)]
-    #[allow(clippy::borrowed_box)]
-    pub fn downcast_mut<'a, T: Resource>(self: &Box<Self>) -> &'a mut T {
-        assert!(self.is::<T>());
-        let ptr = self as *const Box<_> as *mut Box<T>;
-        unsafe { &mut *ptr }
-    }
-}
+impl_downcast!(Resource);
 
 struct TimerWrap {
     cb: Box<dyn FnMut() + 'static>,
@@ -60,7 +37,7 @@ struct TimerWrap {
 impl Resource for TimerWrap {}
 
 struct TaskWrap {
-    inner: Option<Box<dyn FnMut(TaskResult) + 'static>>,
+    inner: Option<Box<dyn FnOnce(TaskResult) + 'static>>,
 }
 
 impl Resource for TaskWrap {}
@@ -161,7 +138,7 @@ impl EventLoop {
             if let Some(timer) = self
                 .resources
                 .get_mut(index)
-                .map(|resource| resource.downcast_mut::<TimerWrap>())
+                .map(|resource| resource.downcast_mut::<TimerWrap>().unwrap())
             {
                 // Run timer's callback.
                 (timer.cb)();
@@ -199,12 +176,9 @@ impl EventLoop {
     }
 
     fn run_task_callback(&mut self, index: Index, result: TaskResult) {
-        let task_wrap = match self.resources.remove(&index) {
-            Some(t) => t.downcast_mut::<TaskWrap>(),
-            None => return,
-        };
-
-        if let Some(callback) = task_wrap.inner.as_mut() {
+        if let Some(mut resource) = self.resources.remove(&index) {
+            let task_wrap = resource.downcast_mut::<TaskWrap>().unwrap();
+            let callback = task_wrap.inner.take().unwrap();
             (callback)(result);
         }
     }
@@ -228,7 +202,9 @@ impl EventLoop {
     ) {
         let notifier = self.event_dispatcher.clone();
 
-        self.resources.insert(index, Box::new(task_wrap));
+        if task_wrap.inner.is_some() {
+            self.resources.insert(index, Box::new(task_wrap));
+        }
 
         self.thread_pool.execute(move || {
             let result = (task)();
@@ -292,13 +268,13 @@ impl LoopHandle {
     pub fn spawn<F, U>(&self, task: F, task_cb: Option<U>) -> Index
     where
         F: FnOnce() -> TaskResult + Send + 'static,
-        U: FnMut(TaskResult) + 'static,
+        U: FnOnce(TaskResult) + 'static,
     {
         let index = self.index();
 
         // Note: I tried to use `.and_then` instead of this ugly match statement but Rust complains
         // about mismatch types having no idea why.
-        let task_cb: Option<Box<dyn FnMut(TaskResult)>> = match task_cb {
+        let task_cb: Option<Box<dyn FnOnce(TaskResult)>> = match task_cb {
             Some(cb) => Some(Box::new(cb)),
             None => None,
         };
