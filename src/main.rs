@@ -29,7 +29,7 @@ pub trait Resource: Downcast + 'static {
 impl_downcast!(Resource);
 
 struct TimerWrap {
-    cb: Box<dyn FnMut() + 'static>,
+    cb: Box<dyn FnMut(LoopHandle) + 'static>,
     expires_at: Duration,
     repeat: bool,
 }
@@ -37,7 +37,7 @@ struct TimerWrap {
 impl Resource for TimerWrap {}
 
 struct TaskWrap {
-    inner: Option<Box<dyn FnOnce(TaskResult) + 'static>>,
+    inner: Option<Box<dyn FnOnce(LoopHandle, TaskResult) + 'static>>,
 }
 
 impl Resource for TaskWrap {}
@@ -135,13 +135,16 @@ impl EventLoop {
             .collect();
 
         indexes.iter().for_each(|index| {
+            // Create a new event-loop handle to pass in timer's callback.
+            let handle = self.handle();
+
             if let Some(timer) = self
                 .resources
                 .get_mut(index)
                 .map(|resource| resource.downcast_mut::<TimerWrap>().unwrap())
             {
                 // Run timer's callback.
-                (timer.cb)();
+                (timer.cb)(handle);
 
                 // If the timer is repeatable reschedule him, otherwise drop him.
                 if timer.repeat {
@@ -179,7 +182,7 @@ impl EventLoop {
         if let Some(mut resource) = self.resources.remove(&index) {
             let task_wrap = resource.downcast_mut::<TaskWrap>().unwrap();
             let callback = task_wrap.inner.take().unwrap();
-            (callback)(result);
+            (callback)(self.handle(), result);
         }
     }
 
@@ -241,7 +244,7 @@ impl LoopHandle {
     /// Schedules a new timer to the event-loop.
     pub fn timer<F>(&self, delay: u64, repeat: bool, cb: F) -> Index
     where
-        F: FnMut() + 'static,
+        F: FnMut(LoopHandle) + 'static,
     {
         let index = self.index();
         let expires_at = Duration::from_millis(delay);
@@ -268,13 +271,13 @@ impl LoopHandle {
     pub fn spawn<F, U>(&self, task: F, task_cb: Option<U>) -> Index
     where
         F: FnOnce() -> TaskResult + Send + 'static,
-        U: FnOnce(TaskResult) + 'static,
+        U: FnOnce(LoopHandle, TaskResult) + 'static,
     {
         let index = self.index();
 
         // Note: I tried to use `.and_then` instead of this ugly match statement but Rust complains
         // about mismatch types having no idea why.
-        let task_cb: Option<Box<dyn FnOnce(TaskResult)>> = match task_cb {
+        let task_cb: Option<Box<dyn FnOnce(LoopHandle, TaskResult)>> = match task_cb {
             Some(cb) => Some(Box::new(cb)),
             None => None,
         };
@@ -311,14 +314,17 @@ fn main() {
         Some(Ok(content.as_bytes().to_vec()))
     };
 
-    let read_file_cb = |result: TaskResult| {
+    let read_file_cb = |_: LoopHandle, result: TaskResult| {
         let bytes = result.unwrap().unwrap();
         let content = std::str::from_utf8(&bytes).unwrap();
         println!("{}", content);
     };
 
-    handle.timer(1000, false, || println!("Hello!"));
-    handle.timer(2500, false, || println!("Hello, world!"));
+    handle.timer(1000, false, |h: LoopHandle| {
+        println!("Hello!");
+        h.timer(2500, false, |_: LoopHandle| println!("Hello, world!"));
+    });
+    // handle.timer(2500, false, |_: LoopHandle| println!("Hello, world!"));
 
     handle.spawn(read_file, Some(read_file_cb));
 
