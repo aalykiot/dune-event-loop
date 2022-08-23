@@ -100,6 +100,7 @@ pub struct TcpSocketInfo {
     remote_address: SocketAddr,
 }
 
+#[allow(clippy::enum_variant_names)]
 enum Action {
     TimerReq(Index, TimerWrap),
     TimerDeleteReq(Index),
@@ -472,9 +473,9 @@ impl EventLoop {
 
         match buffer.len() {
             // FIN packet.
-            0 => (on_read)(handle.clone(), index, Result::Ok(buffer)),
+            0 => (on_read)(handle, index, Result::Ok(buffer)),
             // We read some bytes.
-            _ if !connection_closed => (on_read)(handle.clone(), index, Result::Ok(buffer)),
+            _ if !connection_closed => (on_read)(handle, index, Result::Ok(buffer)),
             // FIN packet is included to the bytes we read.
             _ => {
                 (on_read)(handle.clone(), index, Result::Ok(buffer));
@@ -835,7 +836,7 @@ fn main() {
 
     let on_write = |_: LoopHandle, _: Index, _: Result<usize>| {};
 
-    const HTTP_REQUEST: &'static str =
+    const HTTP_REQUEST: &str =
         "GET / HTTP/1.1\r\nHost: rssweather.com\r\nConnection: close\r\n\r\n";
 
     let on_connection =
