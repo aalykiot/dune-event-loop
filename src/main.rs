@@ -7,6 +7,7 @@ use mio::Interest;
 use mio::Poll;
 use mio::Registry;
 use mio::Token;
+use mio::Waker;
 use std::any::type_name;
 use std::borrow::Cow;
 use std::cell::Cell;
@@ -16,11 +17,17 @@ use std::collections::LinkedList;
 use std::io;
 use std::io::Read;
 use std::io::Write;
+use std::net::Shutdown;
 use std::net::SocketAddr;
 use std::rc::Rc;
+use std::sync::atomic::AtomicBool;
+use std::sync::atomic::Ordering::Acquire;
+use std::sync::atomic::Ordering::Release;
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::thread::spawn;
+use std::thread::JoinHandle;
 use std::time::Duration;
 use std::time::Instant;
 use threadpool::ThreadPool;
@@ -35,6 +42,9 @@ pub trait Resource: Downcast + 'static {
     fn name(&self) -> Cow<str> {
         type_name::<Self>().into()
     }
+
+    /// Close hook.
+    fn close(&mut self) {}
 }
 
 impl_downcast!(Resource);
@@ -65,8 +75,14 @@ struct TcpStreamWrap {
     write_queue: LinkedList<(&'static [u8], TcpOnWrite)>,
 }
 
-impl Resource for TcpStreamWrap {}
+impl Resource for TcpStreamWrap {
+    fn close(&mut self) {
+        // Shutdown the write side of the stream.
+        self.socket.shutdown(Shutdown::Write).unwrap();
+    }
+}
 
+#[allow(dead_code)]
 pub struct TcpSocketInfo {
     id: Index,
     local_address: SocketAddr,
@@ -103,11 +119,15 @@ pub struct EventLoop {
     action_queue: mpsc::Receiver<Action>,
     action_queue_empty: Rc<Cell<bool>>,
     action_dispatcher: Rc<mpsc::Sender<Action>>,
+    close_queue: Vec<(Index, Box<dyn FnOnce(LoopHandle) + 'static>)>,
     thread_pool: ThreadPool,
     event_dispatcher: Arc<Mutex<mpsc::Sender<Event>>>,
     event_queue: mpsc::Receiver<Event>,
     pending_tasks: u32,
-    network: Registry,
+    network: JoinHandle<()>,
+    network_events: Registry,
+    network_should_close: Arc<AtomicBool>,
+    network_waker: Waker,
 }
 
 impl EventLoop {
@@ -120,10 +140,18 @@ impl EventLoop {
 
         // Create network handles.
         let poll = Poll::new().unwrap();
+        let waker = Waker::new(poll.registry(), Token(0)).unwrap();
         let registry = poll.registry().try_clone().unwrap();
 
+        // Atomic boolean to signal network thread termination.
+        let network_should_close = Arc::new(AtomicBool::new(false));
+
         // Start the network thread.
-        Self::start_network_thread(poll, event_dispatcher.clone());
+        let network = Self::start_network_thread(
+            poll,
+            event_dispatcher.clone(),
+            network_should_close.clone(),
+        );
 
         EventLoop {
             index: Rc::new(Cell::new(1)),
@@ -132,24 +160,51 @@ impl EventLoop {
             action_queue,
             action_queue_empty: Rc::new(Cell::new(true)),
             action_dispatcher: Rc::new(action_dispatcher),
+            close_queue: Vec::new(),
             thread_pool: ThreadPool::new(4),
             event_dispatcher,
             event_queue,
             pending_tasks: 0,
-            network: registry,
+            network,
+            network_events: registry,
+            network_should_close,
+            network_waker: waker,
         }
     }
 
-    fn start_network_thread(mut poll: Poll, event_dispatcher: Arc<Mutex<mpsc::Sender<Event>>>) {
-        std::thread::spawn(move || {
+    /// Gracefully terminates the event-loop.
+    pub fn shutdown(self) {
+        self.network_should_close.store(true, Release);
+        self.network_waker.wake().unwrap();
+        self.network.join().unwrap();
+        self.thread_pool.join();
+    }
+
+    fn start_network_thread(
+        mut poll: Poll,
+        event_dispatcher: Arc<Mutex<mpsc::Sender<Event>>>,
+        network_should_close: Arc<AtomicBool>,
+    ) -> JoinHandle<()> {
+        spawn(move || {
             // Create a MIO event store.
             let mut events = Events::with_capacity(1024);
 
             loop {
+                // Check if the network thread should terminate.
+                if network_should_close.load(Acquire) {
+                    break;
+                }
+
                 // Poll for new network events (this will block the network thread).
                 poll.poll(&mut events, None).unwrap();
 
                 for event in &events {
+                    // Note: Token(0) is a special token signaling that the main thread woke the network poll
+                    // probably to shutdown us down.
+                    if event.token() == Token(0) {
+                        break;
+                    }
+
                     // Signal the main thread for the new TCP event.
                     let event_type = match (
                         event.is_readable() || event.is_read_closed(),
@@ -167,7 +222,7 @@ impl EventLoop {
                         .unwrap();
                 }
             }
-        });
+        })
     }
 
     pub fn handle(&self) -> LoopHandle {
@@ -192,6 +247,7 @@ impl EventLoop {
         self.prepare();
         self.run_timers();
         self.run_poll();
+        self.run_close();
     }
 
     fn prepare(&mut self) {
@@ -278,6 +334,20 @@ impl EventLoop {
         }
     }
 
+    fn run_close(&mut self) {
+        // Create a new event-loop handle.
+        let handle = self.handle();
+
+        // Clean up resources.
+        for (rid, on_close) in self.close_queue.drain(..) {
+            if let Some(mut resource) = self.resources.remove(&rid) {
+                resource.close();
+                (on_close)(handle.clone());
+            }
+        }
+        self.prepare();
+    }
+
     fn run_task_callback(&mut self, index: Index, result: TaskResult) {
         if let Some(mut resource) = self.resources.remove(&index) {
             let task_wrap = resource.downcast_mut::<TaskWrap>().unwrap();
@@ -301,14 +371,19 @@ impl EventLoop {
         // Cast resource to TcpStreamWrap.
         let tcp_wrap = resource.downcast_mut::<TcpStreamWrap>().unwrap();
 
-        // If we hit an error while connecting return that error.
+        // Check if the socket is in error state.
         if let Ok(Some(err)) | Err(err) = tcp_wrap.socket.take_error() {
-            // Run on_connection callback.
-            let on_connection = tcp_wrap.on_connection.take().unwrap();
-            (on_connection)(handle, index, Result::Err(err.into()));
-
-            self.resources.remove(&index).unwrap();
-            return;
+            // If `on_connection` is available it means the socket error happened
+            // while trying to connect.
+            if let Some(on_connection) = tcp_wrap.on_connection.take() {
+                (on_connection)(handle, index, Result::Err(err.into()));
+                return;
+            }
+            // Otherwise the error happened while writing.
+            if let Some((_, on_write)) = tcp_wrap.write_queue.pop_front() {
+                (on_write)(handle, index, Result::Err(err.into()));
+                return;
+            }
         }
 
         // Note: If the on_connection callback is None it means that in some
@@ -329,7 +404,7 @@ impl EventLoop {
 
             let token = Token(index as usize);
 
-            self.network
+            self.network_events
                 .reregister(&mut tcp_wrap.socket, token, Interest::READABLE)
                 .unwrap();
 
@@ -367,15 +442,19 @@ impl EventLoop {
         let mut buffer = vec![0; 4096];
         let mut bytes_read = 0;
 
-        // This will help us catch errors inside the loop.
+        // This will help us catch errors and FIN packets.
         let mut read_error: Option<io::Error> = None;
+        let mut connection_closed = false;
 
         // We can (maybe) read from the connection.
         loop {
             match tcp_wrap.socket.read(&mut buffer[bytes_read..]) {
                 // Reading 0 bytes means the other side has closed the
                 // connection or is done writing.
-                Ok(0) => break,
+                Ok(0) => {
+                    connection_closed = true;
+                    break;
+                }
                 Ok(n) => {
                     bytes_read += n;
                     // If the buffer is not big enough, extend it.
@@ -401,10 +480,19 @@ impl EventLoop {
             return;
         }
 
-        // Resize the buffer.
         buffer.resize(bytes_read, 0);
 
-        (on_read)(handle, index, Result::Ok(buffer));
+        match buffer.len() {
+            // FIN packet.
+            0 => (on_read)(handle.clone(), index, Result::Ok(buffer)),
+            // We read some bytes.
+            _ if !connection_closed => (on_read)(handle.clone(), index, Result::Ok(buffer)),
+            // FIN packet is included to the bytes we read.
+            _ => {
+                (on_read)(handle.clone(), index, Result::Ok(buffer));
+                (on_read)(handle, index, Result::Ok(vec![]));
+            }
+        };
     }
 
     fn ev_new_timer(&mut self, index: Index, timer: TimerWrap) {
@@ -448,7 +536,7 @@ impl EventLoop {
         let socket = &mut tcp_wrap.socket;
         let token = Token(tcp_wrap.id as usize);
 
-        self.network
+        self.network_events
             .register(socket, token, Interest::WRITABLE)
             .unwrap();
 
@@ -475,7 +563,7 @@ impl EventLoop {
 
         let interest = Interest::WRITABLE | Interest::READABLE;
 
-        self.network
+        self.network_events
             .reregister(&mut tcp_wrap.socket, token, interest)
             .unwrap();
     }
@@ -498,7 +586,7 @@ impl EventLoop {
             _ => Interest::READABLE | Interest::WRITABLE,
         };
 
-        self.network
+        self.network_events
             .reregister(&mut tcp_wrap.socket, token, interest)
             .unwrap();
     }
@@ -508,11 +596,8 @@ impl EventLoop {
         index: Index,
         on_close: Box<dyn FnOnce(LoopHandle) + 'static>,
     ) {
-        // Remove resource from the event-loop.
-        self.resources.remove(&index).unwrap();
-
-        // Run on_close callback
-        (on_close)(self.handle());
+        // Schedule resource for graceful shutdown and removal.
+        self.close_queue.push((index, on_close));
     }
 }
 
@@ -522,6 +607,7 @@ impl Default for EventLoop {
     }
 }
 
+#[derive(Clone)]
 pub struct LoopHandle {
     index: Rc<Cell<Index>>,
     actions: Rc<mpsc::Sender<Action>>,
@@ -688,7 +774,7 @@ fn main() {
 
     // handle.spawn(read_file, Some(read_file_cb));
 
-    let on_close = |_: LoopHandle| println!("Socket closed!");
+    let on_close = |_: LoopHandle| println!("Connection closed.");
 
     let on_read = move |h: LoopHandle, index: Index, data: Result<Vec<u8>>| {
         match data {
@@ -698,21 +784,26 @@ fn main() {
         };
     };
 
-    let on_write = |_: LoopHandle, __: Index, ___: Result<usize>| {};
+    let on_write = |_: LoopHandle, _: Index, _: Result<usize>| {};
+
+    const HTTP_REQUEST: &'static str =
+        "GET / HTTP/1.1\r\nHost: rssweather.com\r\nConnection: close\r\n\r\n";
 
     let on_connection =
         move |h: LoopHandle, index: Index, socket: Result<TcpSocketInfo>| match socket {
             Ok(_) => {
-                println!("Connection established!!");
                 h.tcp_read_start(index, on_read);
-                h.tcp_write(index, "Hello!".as_bytes(), on_write)
+                h.tcp_write(index, HTTP_REQUEST.as_bytes(), on_write);
             }
             Err(err) => println!("ERROR: {}", err),
         };
 
-    handle.tcp_connect("127.0.0.1:3000", on_connection).unwrap();
+    handle
+        .tcp_connect("104.21.45.178:80", on_connection)
+        .unwrap();
 
     while event_loop.has_pending_events() {
         event_loop.tick();
     }
+    event_loop.shutdown();
 }
