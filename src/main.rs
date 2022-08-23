@@ -32,9 +32,8 @@ use std::time::Duration;
 use std::time::Instant;
 use threadpool::ThreadPool;
 
+/// Wrapper type for resource identification.
 type Index = u32;
-
-type TaskResult = Option<Result<Vec<u8>>>;
 
 /// All objects that are tracked by the event-loop should implement the `Resource` trait.
 pub trait Resource: Downcast + 'static {
@@ -42,13 +41,13 @@ pub trait Resource: Downcast + 'static {
     fn name(&self) -> Cow<str> {
         type_name::<Self>().into()
     }
-
-    /// Close hook.
+    /// Custom way to close any resources.
     fn close(&mut self) {}
 }
 
 impl_downcast!(Resource);
 
+/// Describes a timer resource.
 struct TimerWrap {
     cb: Box<dyn FnMut(LoopHandle) + 'static>,
     expires_at: Duration,
@@ -57,16 +56,27 @@ struct TimerWrap {
 
 impl Resource for TimerWrap {}
 
+/// Describes an async task.
 struct TaskWrap {
-    inner: Option<Box<dyn FnOnce(LoopHandle, TaskResult) + 'static>>,
+    inner: Option<TaskOnFinish>,
 }
 
 impl Resource for TaskWrap {}
 
+// Wrapper types for the task resource.
+type Task = Box<dyn FnOnce() -> TaskResult + Send>;
+type TaskResult = Option<Result<Vec<u8>>>;
+type TaskOnFinish = Box<dyn FnOnce(LoopHandle, TaskResult) + 'static>;
+
+// Wrapper types for different TCP callbacks.
 type TcpOnConnection = Box<dyn FnOnce(LoopHandle, Index, Result<TcpSocketInfo>) + 'static>;
 type TcpOnWrite = Box<dyn FnOnce(LoopHandle, Index, Result<usize>) + 'static>;
 type TcpOnRead = Box<dyn FnMut(LoopHandle, Index, Result<Vec<u8>>) + 'static>;
 
+// Wrapper around close callbacks.
+type OnClose = Box<dyn FnOnce(LoopHandle) + 'static>;
+
+/// Describes a TCP connection.
 struct TcpStreamWrap {
     id: Index,
     socket: TcpStream,
@@ -83,6 +93,7 @@ impl Resource for TcpStreamWrap {
 }
 
 #[allow(dead_code)]
+/// Useful information about a TCP socket.
 pub struct TcpSocketInfo {
     id: Index,
     local_address: SocketAddr,
@@ -90,13 +101,13 @@ pub struct TcpSocketInfo {
 }
 
 enum Action {
-    NewTimer(Index, TimerWrap),
-    RemoveTimer(Index),
-    SpawnTask(Index, Box<dyn FnOnce() -> TaskResult + Send>, TaskWrap),
-    NewTcpConnection(Index, TcpStreamWrap),
-    NewTcpWriteRequest(Index, &'static [u8], TcpOnWrite),
-    NewTcpReadStart(Index, TcpOnRead),
-    CloseTcpSocket(Index, Box<dyn FnOnce(LoopHandle) + 'static>),
+    TimerReq(Index, TimerWrap),
+    TimerDeleteReq(Index),
+    SpawnReq(Index, Task, TaskWrap),
+    TcpConnectionReq(Index, TcpStreamWrap),
+    TcpWriteReq(Index, &'static [u8], TcpOnWrite),
+    TcpReadStartReq(Index, TcpOnRead),
+    TcpCloseReq(Index, OnClose),
 }
 
 enum Event {
@@ -119,7 +130,7 @@ pub struct EventLoop {
     action_queue: mpsc::Receiver<Action>,
     action_queue_empty: Rc<Cell<bool>>,
     action_dispatcher: Rc<mpsc::Sender<Action>>,
-    close_queue: Vec<(Index, Box<dyn FnOnce(LoopHandle) + 'static>)>,
+    close_queue: Vec<(Index, OnClose)>,
     thread_pool: ThreadPool,
     event_dispatcher: Arc<Mutex<mpsc::Sender<Event>>>,
     event_queue: mpsc::Receiver<Event>,
@@ -130,7 +141,12 @@ pub struct EventLoop {
     network_waker: Waker,
 }
 
+//---------------------------------------------------------
+//  PUBLICLY EXPOSED METHODS.
+//---------------------------------------------------------
+
 impl EventLoop {
+    /// Creates a new event-loop instance.
     pub fn new() -> Self {
         let (action_dispatcher, action_queue) = mpsc::channel();
         let (event_dispatcher, event_queue) = mpsc::channel();
@@ -147,7 +163,7 @@ impl EventLoop {
         let network_should_close = Arc::new(AtomicBool::new(false));
 
         // Start the network thread.
-        let network = Self::start_network_thread(
+        let network = Self::spawn_network_thread(
             poll,
             event_dispatcher.clone(),
             network_should_close.clone(),
@@ -172,59 +188,7 @@ impl EventLoop {
         }
     }
 
-    /// Gracefully terminates the event-loop.
-    pub fn shutdown(self) {
-        self.network_should_close.store(true, Release);
-        self.network_waker.wake().unwrap();
-        self.network.join().unwrap();
-        self.thread_pool.join();
-    }
-
-    fn start_network_thread(
-        mut poll: Poll,
-        event_dispatcher: Arc<Mutex<mpsc::Sender<Event>>>,
-        network_should_close: Arc<AtomicBool>,
-    ) -> JoinHandle<()> {
-        spawn(move || {
-            // Create a MIO event store.
-            let mut events = Events::with_capacity(1024);
-
-            loop {
-                // Check if the network thread should terminate.
-                if network_should_close.load(Acquire) {
-                    break;
-                }
-
-                // Poll for new network events (this will block the network thread).
-                poll.poll(&mut events, None).unwrap();
-
-                for event in &events {
-                    // Note: Token(0) is a special token signaling that the main thread woke the network poll
-                    // probably to shutdown us down.
-                    if event.token() == Token(0) {
-                        break;
-                    }
-
-                    // Signal the main thread for the new TCP event.
-                    let event_type = match (
-                        event.is_readable() || event.is_read_closed(),
-                        event.is_writable(),
-                    ) {
-                        (true, false) => TcpEvent::Read(event.token().0 as u32),
-                        (false, true) => TcpEvent::Write(event.token().0 as u32),
-                        _ => continue,
-                    };
-
-                    event_dispatcher
-                        .lock()
-                        .unwrap()
-                        .send(Event::Network(event_type))
-                        .unwrap();
-                }
-            }
-        })
-    }
-
+    /// Returns a new handle to the event-loop.
     pub fn handle(&self) -> LoopHandle {
         LoopHandle {
             index: self.index.clone(),
@@ -233,16 +197,19 @@ impl EventLoop {
         }
     }
 
+    /// Returns a new interrupt-handle to the event-loop (sharable across threads).
     pub fn interrupt_handle(&self) -> LoopInterruptHandle {
         LoopInterruptHandle {
             events: self.event_dispatcher.clone(),
         }
     }
 
+    /// Returns if there are pending events still ongoing.
     pub fn has_pending_events(&self) -> bool {
         !(self.resources.is_empty() && self.action_queue_empty.get())
     }
 
+    /// Performs a single tick of the event-loop.
     pub fn tick(&mut self) {
         self.prepare();
         self.run_timers();
@@ -250,29 +217,37 @@ impl EventLoop {
         self.run_close();
     }
 
+    /// Gracefully terminates the event-loop.
+    pub fn shutdown(self) {
+        self.network_should_close.store(true, Release);
+        self.network_waker.wake().unwrap();
+        self.network.join().unwrap();
+        self.thread_pool.join();
+    }
+}
+
+//---------------------------------------------------------
+//  EVENT LOOP PHASES.
+//---------------------------------------------------------
+
+impl EventLoop {
+    /// Drains the action_queue for requested async actions.
     fn prepare(&mut self) {
         while let Ok(action) = self.action_queue.try_recv() {
             match action {
-                Action::NewTimer(index, timer) => self.ev_new_timer(index, timer),
-                Action::RemoveTimer(index) => self.ev_remove_timer(&index),
-                Action::SpawnTask(index, task, t_wrap) => self.ev_spawn_task(index, task, t_wrap),
-                Action::NewTcpConnection(index, tc_wrap) => {
-                    self.ev_new_tcp_connection(index, tc_wrap)
-                }
-                Action::NewTcpWriteRequest(index, data, on_write) => {
-                    self.ev_new_tcp_write_request(index, data, on_write)
-                }
-                Action::NewTcpReadStart(index, on_read) => {
-                    self.ev_new_tcp_read_start(index, on_read)
-                }
-                Action::CloseTcpSocket(index, on_close) => {
-                    self.ev_close_tcp_socket(index, on_close)
-                }
+                Action::TimerReq(index, timer) => self.timer_req(index, timer),
+                Action::TimerDeleteReq(index) => self.timer_delete_req(&index),
+                Action::SpawnReq(index, task, t_wrap) => self.spawn_req(index, task, t_wrap),
+                Action::TcpConnectionReq(index, tc_wrap) => self.tcp_connection_req(index, tc_wrap),
+                Action::TcpWriteReq(index, data, cb) => self.tcp_write_req(index, data, cb),
+                Action::TcpReadStartReq(index, cb) => self.tcp_read_start_req(index, cb),
+                Action::TcpCloseReq(index, cb) => self.tcp_close_req(index, cb),
             };
         }
         self.action_queue_empty.set(true);
     }
 
+    /// Runs all expired timers.
     fn run_timers(&mut self) {
         // Note: We use this intermediate vector so we don't have Rust complaining
         // about holding multiple references.
@@ -312,6 +287,7 @@ impl EventLoop {
         self.prepare();
     }
 
+    /// Polls for new I/O events (async-tasks, networking, etc).
     fn run_poll(&mut self) {
         // Based on what resources the event-loop is currently running will decide
         // how long we should wait on the this phase.
@@ -324,16 +300,17 @@ impl EventLoop {
         if let Ok(event) = self.event_queue.recv_timeout(timeout) {
             match event {
                 Event::Interrupt => return,
-                Event::ThreadPool(index, result) => self.run_task_callback(index, result),
+                Event::ThreadPool(index, result) => self.task_complete(index, result),
                 Event::Network(tcp_event) => match tcp_event {
-                    TcpEvent::Write(index) => self.run_tcp_socket_write(index),
-                    TcpEvent::Read(index) => self.run_tcp_socket_read(index),
+                    TcpEvent::Write(index) => self.tcp_socket_write(index),
+                    TcpEvent::Read(index) => self.tcp_socket_read(index),
                 },
             }
             self.prepare();
         }
     }
 
+    /// Cleans up `dying` resources.
     fn run_close(&mut self) {
         // Create a new event-loop handle.
         let handle = self.handle();
@@ -347,8 +324,15 @@ impl EventLoop {
         }
         self.prepare();
     }
+}
 
-    fn run_task_callback(&mut self, index: Index, result: TaskResult) {
+//---------------------------------------------------------
+//  INTERNAL (AFTER) ASYNC OPERATION HANDLES.
+//---------------------------------------------------------
+
+impl EventLoop {
+    /// Runs callback of finished async task.
+    fn task_complete(&mut self, index: Index, result: TaskResult) {
         if let Some(mut resource) = self.resources.remove(&index) {
             let task_wrap = resource.downcast_mut::<TaskWrap>().unwrap();
             let callback = task_wrap.inner.take().unwrap();
@@ -358,7 +342,9 @@ impl EventLoop {
         }
     }
 
-    fn run_tcp_socket_write(&mut self, index: Index) {
+    /// Tries to write to a (ready) TCP socket.
+    /// `ready` = the operation won't block the current thread.
+    fn tcp_socket_write(&mut self, index: Index) {
         // Create a new handle.
         let handle = self.handle();
 
@@ -425,7 +411,9 @@ impl EventLoop {
         }
     }
 
-    fn run_tcp_socket_read(&mut self, index: Index) {
+    /// Tries to read from a (ready) TCP socket.
+    /// `ready` = the operation won't block the current thread.
+    fn tcp_socket_read(&mut self, index: Index) {
         // Create a new handle.
         let handle = self.handle();
 
@@ -494,19 +482,28 @@ impl EventLoop {
             }
         };
     }
+}
 
-    fn ev_new_timer(&mut self, index: Index, timer: TimerWrap) {
+//---------------------------------------------------------
+//  INTERNAL (SCHEDULING) ASYNC OPERATION HANDLES.
+//---------------------------------------------------------
+
+impl EventLoop {
+    /// Schedules a new timer.
+    fn timer_req(&mut self, index: Index, timer: TimerWrap) {
         let time_key = Instant::now() + timer.expires_at;
         self.resources.insert(index, Box::new(timer));
         self.timer_queue.insert(time_key, index);
     }
 
-    fn ev_remove_timer(&mut self, index: &Index) {
+    /// Removes an existed timer.
+    fn timer_delete_req(&mut self, index: &Index) {
         self.resources.remove(index);
         self.timer_queue.retain(|_, v| *v != *index);
     }
 
-    fn ev_spawn_task(
+    /// Spawns a new task to the thread-pool.
+    fn spawn_req(
         &mut self,
         index: Index,
         task: Box<dyn FnOnce() -> TaskResult + Send>,
@@ -528,7 +525,8 @@ impl EventLoop {
         self.pending_tasks += 1;
     }
 
-    fn ev_new_tcp_connection(&mut self, index: Index, mut tcp_wrap: TcpStreamWrap) {
+    /// Registers interest for connecting to a TCP socket.
+    fn tcp_connection_req(&mut self, index: Index, mut tcp_wrap: TcpStreamWrap) {
         // When we create a new TCP socket connection we have to make sure
         // it's well connected with the remote host.
         //
@@ -543,12 +541,8 @@ impl EventLoop {
         self.resources.insert(index, Box::new(tcp_wrap));
     }
 
-    fn ev_new_tcp_write_request(
-        &mut self,
-        index: Index,
-        data: &'static [u8],
-        on_write: TcpOnWrite,
-    ) {
+    /// Registers interest for writing to an open TCP socket.
+    fn tcp_write_req(&mut self, index: Index, data: &'static [u8], on_write: TcpOnWrite) {
         let resource = match self.resources.get_mut(&index) {
             Some(resource) => resource,
             None => return,
@@ -568,7 +562,8 @@ impl EventLoop {
             .unwrap();
     }
 
-    fn ev_new_tcp_read_start(&mut self, index: Index, on_read: TcpOnRead) {
+    /// Registers interest for reading of an open TCP socket.
+    fn tcp_read_start_req(&mut self, index: Index, on_read: TcpOnRead) {
         let resource = match self.resources.get_mut(&index) {
             Some(resource) => resource,
             None => return,
@@ -591,13 +586,61 @@ impl EventLoop {
             .unwrap();
     }
 
-    fn ev_close_tcp_socket(
-        &mut self,
-        index: Index,
-        on_close: Box<dyn FnOnce(LoopHandle) + 'static>,
-    ) {
+    /// Schedules a TCP socket shutdown.
+    fn tcp_close_req(&mut self, index: Index, on_close: Box<dyn FnOnce(LoopHandle) + 'static>) {
         // Schedule resource for graceful shutdown and removal.
         self.close_queue.push((index, on_close));
+    }
+}
+
+//---------------------------------------------------------
+//  NETWORK THREAD.
+//---------------------------------------------------------
+
+impl EventLoop {
+    fn spawn_network_thread(
+        mut poll: Poll,
+        event_dispatcher: Arc<Mutex<mpsc::Sender<Event>>>,
+        network_should_close: Arc<AtomicBool>,
+    ) -> JoinHandle<()> {
+        spawn(move || {
+            // Create a MIO event store.
+            let mut events = Events::with_capacity(1024);
+
+            loop {
+                // Check if the network thread should terminate.
+                if network_should_close.load(Acquire) {
+                    break;
+                }
+
+                // Poll for new network events (this will block the network thread).
+                poll.poll(&mut events, None).unwrap();
+
+                for event in &events {
+                    // Note: Token(0) is a special token signaling that the main thread woke the network poll
+                    // probably to shutdown us down.
+                    if event.token() == Token(0) {
+                        break;
+                    }
+
+                    // Signal the main thread for the new TCP event.
+                    let event_type = match (
+                        event.is_readable() || event.is_read_closed(),
+                        event.is_writable(),
+                    ) {
+                        (true, false) => TcpEvent::Read(event.token().0 as u32),
+                        (false, true) => TcpEvent::Write(event.token().0 as u32),
+                        _ => continue,
+                    };
+
+                    event_dispatcher
+                        .lock()
+                        .unwrap()
+                        .send(Event::Network(event_type))
+                        .unwrap();
+                }
+            }
+        })
     }
 }
 
@@ -637,7 +680,7 @@ impl LoopHandle {
             repeat,
         };
 
-        self.actions.send(Action::NewTimer(index, timer)).unwrap();
+        self.actions.send(Action::TimerReq(index, timer)).unwrap();
         self.actions_queue_empty.set(false);
 
         index
@@ -645,7 +688,7 @@ impl LoopHandle {
 
     /// Removes a scheduled timer from the event-loop.
     pub fn remove_timer(&self, index: &Index) {
-        self.actions.send(Action::RemoveTimer(*index)).unwrap();
+        self.actions.send(Action::TimerDeleteReq(*index)).unwrap();
         self.actions_queue_empty.set(false);
     }
 
@@ -667,7 +710,7 @@ impl LoopHandle {
         let task_wrap = TaskWrap { inner: task_cb };
 
         self.actions
-            .send(Action::SpawnTask(index, Box::new(task), task_wrap))
+            .send(Action::SpawnReq(index, Box::new(task), task_wrap))
             .unwrap();
 
         self.actions_queue_empty.set(false);
@@ -696,7 +739,7 @@ impl LoopHandle {
         };
 
         self.actions
-            .send(Action::NewTcpConnection(index, stream))
+            .send(Action::TcpConnectionReq(index, stream))
             .unwrap();
 
         self.actions_queue_empty.set(false);
@@ -710,7 +753,7 @@ impl LoopHandle {
         F: FnOnce(LoopHandle, Index, Result<usize>) + 'static,
     {
         self.actions
-            .send(Action::NewTcpWriteRequest(index, data, Box::new(on_write)))
+            .send(Action::TcpWriteReq(index, data, Box::new(on_write)))
             .unwrap();
 
         self.actions_queue_empty.set(false);
@@ -722,7 +765,7 @@ impl LoopHandle {
         F: FnMut(LoopHandle, Index, Result<Vec<u8>>) + 'static,
     {
         self.actions
-            .send(Action::NewTcpReadStart(index, Box::new(on_read)))
+            .send(Action::TcpReadStartReq(index, Box::new(on_read)))
             .unwrap();
 
         self.actions_queue_empty.set(false);
@@ -734,7 +777,7 @@ impl LoopHandle {
         F: FnOnce(LoopHandle) + 'static,
     {
         self.actions
-            .send(Action::CloseTcpSocket(index, Box::new(on_close)))
+            .send(Action::TcpCloseReq(index, Box::new(on_close)))
             .unwrap();
 
         self.actions_queue_empty.set(false);
@@ -756,23 +799,29 @@ fn main() {
     let mut event_loop = EventLoop::new();
     let handle = event_loop.handle();
 
-    // let read_file = || {
-    //     let content = std::fs::read_to_string("./src/main.rs").unwrap();
-    //     Some(Ok(content.as_bytes().to_vec()))
-    // };
-
-    // let read_file_cb = |_: LoopHandle, result: TaskResult| {
-    //     let bytes = result.unwrap().unwrap();
-    //     let content = std::str::from_utf8(&bytes).unwrap();
-    //     println!("{}", content);
-    // };
-
+    // TIMERS EXAMPLE (uncomment to run)
+    //
     // handle.timer(1000, false, |h: LoopHandle| {
     //     println!("Hello!");
     //     h.timer(2500, false, |_: LoopHandle| println!("Hello, world!"));
     // });
 
+    // FILE SYSTEM OPERATIONS EXAMPLE (uncomment to run)
+    //
+    // let read_file = || {
+    //     let content = std::fs::read_to_string("./src/main.rs").unwrap();
+    //     Some(Ok(content.as_bytes().to_vec()))
+    // };
+    //
+    // let read_file_cb = |_: LoopHandle, result: TaskResult| {
+    //     let bytes = result.unwrap().unwrap();
+    //     let content = std::str::from_utf8(&bytes).unwrap();
+    //     println!("{}", content);
+    // };
+    //
     // handle.spawn(read_file, Some(read_file_cb));
+
+    // TCP CLIENT EXAMPLE (uncomment to run)
 
     let on_close = |_: LoopHandle| println!("Connection closed.");
 
