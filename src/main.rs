@@ -21,14 +21,9 @@ use std::io::Write;
 use std::net::Shutdown;
 use std::net::SocketAddr;
 use std::rc::Rc;
-use std::sync::atomic::AtomicBool;
-use std::sync::atomic::Ordering::Acquire;
-use std::sync::atomic::Ordering::Release;
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::thread::spawn;
-use std::thread::JoinHandle;
 use std::time::Duration;
 use std::time::Instant;
 use threadpool::ThreadPool;
@@ -125,7 +120,6 @@ enum Action {
 }
 
 enum Event {
-    Interrupt,
     ThreadPool(Index, TaskResult),
     Network(TcpEvent),
 }
@@ -150,10 +144,9 @@ pub struct EventLoop {
     event_dispatcher: Arc<Mutex<mpsc::Sender<Event>>>,
     event_queue: mpsc::Receiver<Event>,
     pending_tasks: u32,
-    network: JoinHandle<()>,
     network_events: Registry,
-    network_should_close: Arc<AtomicBool>,
-    network_waker: Waker,
+    poll: Poll,
+    waker: Arc<Waker>,
 }
 
 //---------------------------------------------------------
@@ -174,16 +167,6 @@ impl EventLoop {
         let waker = Waker::new(poll.registry(), Token(0)).unwrap();
         let registry = poll.registry().try_clone().unwrap();
 
-        // Atomic boolean to signal network thread termination.
-        let network_should_close = Arc::new(AtomicBool::new(false));
-
-        // Start the network thread.
-        let network = Self::spawn_network_thread(
-            poll,
-            event_dispatcher.clone(),
-            network_should_close.clone(),
-        );
-
         EventLoop {
             index: Rc::new(Cell::new(1)),
             resources: HashMap::new(),
@@ -196,10 +179,9 @@ impl EventLoop {
             event_dispatcher,
             event_queue,
             pending_tasks: 0,
-            network,
+            poll,
             network_events: registry,
-            network_should_close,
-            network_waker: waker,
+            waker: Arc::new(waker),
         }
     }
 
@@ -215,7 +197,7 @@ impl EventLoop {
     /// Returns a new interrupt-handle to the event-loop (sharable across threads).
     pub fn interrupt_handle(&self) -> LoopInterruptHandle {
         LoopInterruptHandle {
-            events: self.event_dispatcher.clone(),
+            waker: self.waker.clone(),
         }
     }
 
@@ -230,14 +212,6 @@ impl EventLoop {
         self.run_timers();
         self.run_poll();
         self.run_close();
-    }
-
-    /// Gracefully terminates the event-loop.
-    pub fn shutdown(self) {
-        self.network_should_close.store(true, Release);
-        self.network_waker.wake().unwrap();
-        self.network.join().unwrap();
-        self.thread_pool.join();
     }
 }
 
@@ -313,9 +287,35 @@ impl EventLoop {
             None => Duration::ZERO,
         };
 
-        if let Ok(event) = self.event_queue.recv_timeout(timeout) {
+        let mut events = Events::with_capacity(1024);
+
+        // Poll for new network events (this will block the thread).
+        self.poll.poll(&mut events, Some(timeout)).unwrap();
+
+        for event in &events {
+            // Note: Token(0) is a special token signaling that someone woke us up.
+            if event.token() == Token(0) {
+                break;
+            }
+
+            let event_type = match (
+                event.is_readable() || event.is_read_closed(),
+                event.is_writable(),
+            ) {
+                (true, false) => TcpEvent::Read(event.token().0 as u32),
+                (false, true) => TcpEvent::Write(event.token().0 as u32),
+                _ => continue,
+            };
+
+            self.event_dispatcher
+                .lock()
+                .unwrap()
+                .send(Event::Network(event_type))
+                .unwrap();
+        }
+
+        while let Ok(event) = self.event_queue.try_recv() {
             match event {
-                Event::Interrupt => return,
                 Event::ThreadPool(index, result) => self.task_complete(index, result),
                 Event::Network(tcp_event) => match tcp_event {
                     TcpEvent::Write(index) => self.tcp_socket_write(index),
@@ -603,11 +603,15 @@ impl EventLoop {
             self.resources.insert(index, Box::new(task_wrap));
         }
 
-        self.thread_pool.execute(move || {
-            let result = (task)();
-            let notifier = notifier.lock().unwrap();
+        self.thread_pool.execute({
+            let waker = self.waker.clone();
+            move || {
+                let result = (task)();
+                let notifier = notifier.lock().unwrap();
 
-            notifier.send(Event::ThreadPool(index, result)).unwrap();
+                notifier.send(Event::ThreadPool(index, result)).unwrap();
+                waker.wake().unwrap();
+            }
         });
 
         self.pending_tasks += 1;
@@ -693,60 +697,15 @@ impl EventLoop {
     }
 }
 
-//---------------------------------------------------------
-//  NETWORK THREAD.
-//---------------------------------------------------------
-
-impl EventLoop {
-    fn spawn_network_thread(
-        mut poll: Poll,
-        event_dispatcher: Arc<Mutex<mpsc::Sender<Event>>>,
-        network_should_close: Arc<AtomicBool>,
-    ) -> JoinHandle<()> {
-        spawn(move || {
-            // Create a MIO event store.
-            let mut events = Events::with_capacity(1024);
-
-            loop {
-                // Check if the network thread should terminate.
-                if network_should_close.load(Acquire) {
-                    break;
-                }
-
-                // Poll for new network events (this will block the network thread).
-                poll.poll(&mut events, None).unwrap();
-
-                for event in &events {
-                    // Note: Token(0) is a special token signaling that the main thread woke the network poll
-                    // probably to shutdown us down.
-                    if event.token() == Token(0) {
-                        break;
-                    }
-
-                    // Signal the main thread for the new TCP event.
-                    let event_type = match (
-                        event.is_readable() || event.is_read_closed(),
-                        event.is_writable(),
-                    ) {
-                        (true, false) => TcpEvent::Read(event.token().0 as u32),
-                        (false, true) => TcpEvent::Write(event.token().0 as u32),
-                        _ => continue,
-                    };
-
-                    event_dispatcher
-                        .lock()
-                        .unwrap()
-                        .send(Event::Network(event_type))
-                        .unwrap();
-                }
-            }
-        })
-    }
-}
-
 impl Default for EventLoop {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+impl std::ops::Drop for EventLoop {
+    fn drop(&mut self) {
+        self.thread_pool.join();
     }
 }
 
@@ -916,13 +875,13 @@ impl LoopHandle {
 }
 
 pub struct LoopInterruptHandle {
-    events: Arc<Mutex<mpsc::Sender<Event>>>,
+    waker: Arc<Waker>,
 }
 
 impl LoopInterruptHandle {
     // Interrupts the poll phase of the event-loop.
     pub fn interrupt(&self) {
-        self.events.lock().unwrap().send(Event::Interrupt).unwrap();
+        self.waker.wake().unwrap();
     }
 }
 
@@ -947,13 +906,13 @@ fn main() {
     //     let content = std::fs::read_to_string("./src/main.rs").unwrap();
     //     Some(Ok(content.as_bytes().to_vec()))
     // };
-    //
+
     // let read_file_cb = |_: LoopHandle, result: TaskResult| {
     //     let bytes = result.unwrap().unwrap();
     //     let content = std::str::from_utf8(&bytes).unwrap();
     //     println!("{}", content);
     // };
-    //
+
     // handle.spawn(read_file, Some(read_file_cb));
     //
     // ============================================================================
@@ -1025,5 +984,4 @@ fn main() {
     while event_loop.has_pending_events() {
         event_loop.tick();
     }
-    event_loop.shutdown();
 }
