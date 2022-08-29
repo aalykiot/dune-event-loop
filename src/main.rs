@@ -1,6 +1,7 @@
 use anyhow::Result;
 use downcast_rs::impl_downcast;
 use downcast_rs::Downcast;
+use mio::net::TcpListener;
 use mio::net::TcpStream;
 use mio::Events;
 use mio::Interest;
@@ -70,6 +71,7 @@ type TaskOnFinish = Box<dyn FnOnce(LoopHandle, TaskResult) + 'static>;
 
 // Wrapper types for different TCP callbacks.
 type TcpOnConnection = Box<dyn FnOnce(LoopHandle, Index, Result<TcpSocketInfo>) + 'static>;
+type TcpListenerOnConnection = Box<dyn FnMut(LoopHandle, Index, Result<TcpSocketInfo>) + 'static>;
 type TcpOnWrite = Box<dyn FnOnce(LoopHandle, Index, Result<usize>) + 'static>;
 type TcpOnRead = Box<dyn FnMut(LoopHandle, Index, Result<Vec<u8>>) + 'static>;
 
@@ -82,22 +84,32 @@ struct TcpStreamWrap {
     socket: TcpStream,
     on_connection: Option<TcpOnConnection>,
     on_read: Option<TcpOnRead>,
-    write_queue: LinkedList<(&'static [u8], TcpOnWrite)>,
+    write_queue: LinkedList<(Vec<u8>, TcpOnWrite)>,
 }
 
 impl Resource for TcpStreamWrap {
+    #[allow(unused_must_use)]
     fn close(&mut self) {
         // Shutdown the write side of the stream.
-        self.socket.shutdown(Shutdown::Write).unwrap();
+        self.socket.shutdown(Shutdown::Write);
     }
 }
+
+/// Describes a TCP server.
+struct TcpListenerWrap {
+    id: Index,
+    socket: TcpListener,
+    on_connection: TcpListenerOnConnection,
+}
+
+impl Resource for TcpListenerWrap {}
 
 #[allow(dead_code)]
 /// Useful information about a TCP socket.
 pub struct TcpSocketInfo {
     id: Index,
-    local_address: SocketAddr,
-    remote_address: SocketAddr,
+    host: SocketAddr,
+    remote: SocketAddr,
 }
 
 #[allow(clippy::enum_variant_names)]
@@ -106,7 +118,8 @@ enum Action {
     TimerDeleteReq(Index),
     SpawnReq(Index, Task, TaskWrap),
     TcpConnectionReq(Index, TcpStreamWrap),
-    TcpWriteReq(Index, &'static [u8], TcpOnWrite),
+    TcpListenReq(Index, TcpListenerWrap),
+    TcpWriteReq(Index, Vec<u8>, TcpOnWrite),
     TcpReadStartReq(Index, TcpOnRead),
     TcpCloseReq(Index, OnClose),
 }
@@ -117,6 +130,7 @@ enum Event {
     Network(TcpEvent),
 }
 
+#[derive(Debug)]
 enum TcpEvent {
     // Socket is (probably) ready for reading.
     Read(Index),
@@ -240,6 +254,7 @@ impl EventLoop {
                 Action::TimerDeleteReq(index) => self.timer_delete_req(&index),
                 Action::SpawnReq(index, task, t_wrap) => self.spawn_req(index, task, t_wrap),
                 Action::TcpConnectionReq(index, tc_wrap) => self.tcp_connection_req(index, tc_wrap),
+                Action::TcpListenReq(index, tc_wrap) => self.tcp_listen_req(index, tc_wrap),
                 Action::TcpWriteReq(index, data, cb) => self.tcp_write_req(index, data, cb),
                 Action::TcpReadStartReq(index, cb) => self.tcp_read_start_req(index, cb),
                 Action::TcpCloseReq(index, cb) => self.tcp_close_req(index, cb),
@@ -384,8 +399,8 @@ impl EventLoop {
                 index,
                 Ok(TcpSocketInfo {
                     id: index,
-                    local_address: tcp_wrap.socket.local_addr().unwrap(),
-                    remote_address: tcp_wrap.socket.peer_addr().unwrap(),
+                    host: tcp_wrap.socket.local_addr().unwrap(),
+                    remote: tcp_wrap.socket.peer_addr().unwrap(),
                 }),
             );
 
@@ -405,7 +420,7 @@ impl EventLoop {
             let (data, on_write) = tcp_wrap.write_queue.pop_front().unwrap();
 
             // Try write some bytes to the socket.
-            match tcp_wrap.socket.write(data) {
+            match tcp_wrap.socket.write(&data) {
                 Ok(bytes_written) => (on_write)(handle, index, Result::Ok(bytes_written)),
                 Err(err) => (on_write)(handle, index, Result::Err(err.into())),
             };
@@ -423,6 +438,12 @@ impl EventLoop {
             Some(resource) => resource,
             None => return,
         };
+
+        // Check if the TCP read event is really a TCP accept for some listener.
+        if resource.downcast_ref::<TcpListenerWrap>().is_some() {
+            self.tcp_try_accept(index);
+            return;
+        }
 
         // Cast resource to TcpStreamWrap.
         let tcp_wrap = resource.downcast_mut::<TcpStreamWrap>().unwrap();
@@ -483,6 +504,72 @@ impl EventLoop {
             }
         };
     }
+
+    /// Tries to accept a new TCP connection.
+    fn tcp_try_accept(&mut self, index: Index) {
+        // Create a new handle.
+        let handle = self.handle();
+
+        // Try to get a reference to the resource.
+        let resource = match self.resources.get_mut(&index) {
+            Some(resource) => resource,
+            None => return,
+        };
+
+        // Note: In case the downcast to TcpListenerWrap fails it means that the event
+        // fired by the network thread is not for a TCP accept.
+
+        let tcp_wrap = match resource.downcast_mut::<TcpListenerWrap>() {
+            Some(tcp_wrap) => tcp_wrap,
+            None => return,
+        };
+
+        let on_connection = tcp_wrap.on_connection.as_mut();
+
+        // Received an event for the TCP server socket, which indicates we can accept a connection.
+        let (socket, _) = match tcp_wrap.socket.accept() {
+            Ok(sock) => sock,
+            // If we get a `WouldBlock` error we know our
+            // listener has no more incoming connections queued,
+            // so we can return to polling and wait for some
+            // more.
+            Err(e) if e.kind() == io::ErrorKind::WouldBlock => return,
+            Err(e) => {
+                (on_connection)(handle, index, Result::Err(e.into()));
+                return;
+            }
+        };
+
+        // Create a new ID for the socket.
+        let id = handle.index();
+
+        // Create a TCP wrap from the raw socket.
+        let mut stream = TcpStreamWrap {
+            id,
+            socket,
+            on_connection: None,
+            on_read: None,
+            write_queue: LinkedList::new(),
+        };
+
+        (on_connection)(
+            handle,
+            id,
+            Ok(TcpSocketInfo {
+                id: index,
+                host: stream.socket.local_addr().unwrap(),
+                remote: stream.socket.peer_addr().unwrap(),
+            }),
+        );
+
+        // Initialize socket with a READABLE event.
+        self.network_events
+            .register(&mut stream.socket, Token(id as usize), Interest::READABLE)
+            .unwrap();
+
+        // Register the new TCP stream to the event-loop.
+        self.resources.insert(id, Box::new(stream));
+    }
 }
 
 //---------------------------------------------------------
@@ -542,8 +629,20 @@ impl EventLoop {
         self.resources.insert(index, Box::new(tcp_wrap));
     }
 
+    /// Registers the TCP listener to the event-loop.
+    fn tcp_listen_req(&mut self, index: Index, mut tcp_wrap: TcpListenerWrap) {
+        let listener = &mut tcp_wrap.socket;
+        let token = Token(tcp_wrap.id as usize);
+
+        self.network_events
+            .register(listener, token, Interest::READABLE)
+            .unwrap();
+
+        self.resources.insert(index, Box::new(tcp_wrap));
+    }
+
     /// Registers interest for writing to an open TCP socket.
-    fn tcp_write_req(&mut self, index: Index, data: &'static [u8], on_write: TcpOnWrite) {
+    fn tcp_write_req(&mut self, index: Index, data: Vec<u8>, on_write: TcpOnWrite) {
         let resource = match self.resources.get_mut(&index) {
             Some(resource) => resource,
             None => return,
@@ -748,13 +847,44 @@ impl LoopHandle {
         Ok(index)
     }
 
+    /// Starts listening for incoming connections.
+    pub fn tcp_listen<F>(&self, host: &str, on_connection: F) -> Result<Index>
+    where
+        F: FnMut(LoopHandle, Index, Result<TcpSocketInfo>) + 'static,
+    {
+        // Create a SocketAddr from the provided host.
+        let address: SocketAddr = host.parse()?;
+        let index = self.index();
+
+        // Bind address to the socket.
+        let socket = TcpListener::bind(address)?;
+
+        let listener = TcpListenerWrap {
+            id: index,
+            socket,
+            on_connection: Box::new(on_connection),
+        };
+
+        self.actions
+            .send(Action::TcpListenReq(index, listener))
+            .unwrap();
+
+        self.actions_queue_empty.set(false);
+
+        Ok(index)
+    }
+
     /// Writes bytes to an open TCP socket.
-    pub fn tcp_write<F>(&self, index: Index, data: &'static [u8], on_write: F)
+    pub fn tcp_write<F>(&self, index: Index, data: &[u8], on_write: F)
     where
         F: FnOnce(LoopHandle, Index, Result<usize>) + 'static,
     {
         self.actions
-            .send(Action::TcpWriteReq(index, data, Box::new(on_write)))
+            .send(Action::TcpWriteReq(
+                index,
+                data.to_vec(),
+                Box::new(on_write),
+            ))
             .unwrap();
 
         self.actions_queue_empty.set(false);
@@ -800,13 +930,17 @@ fn main() {
     let mut event_loop = EventLoop::new();
     let handle = event_loop.handle();
 
+    // ============================================================================
+    //
     // TIMERS EXAMPLE (uncomment to run)
     //
     // handle.timer(1000, false, |h: LoopHandle| {
     //     println!("Hello!");
     //     h.timer(2500, false, |_: LoopHandle| println!("Hello, world!"));
     // });
-
+    //
+    // ============================================================================
+    //
     // FILE SYSTEM OPERATIONS EXAMPLE (uncomment to run)
     //
     // let read_file = || {
@@ -821,6 +955,39 @@ fn main() {
     // };
     //
     // handle.spawn(read_file, Some(read_file_cb));
+    //
+    // ============================================================================
+    //
+    // TCP ECHO SERVER EXAMPLE (uncomment to run)
+    //
+    // let on_close = |_: LoopHandle| println!("Connection closed.");
+    //
+    // let on_write = |_: LoopHandle, _: Index, result: Result<usize>| {
+    //     if let Err(e) = result {
+    //         eprintln!("{}", e);
+    //     }
+    // };
+    //
+    // let on_read = move |h: LoopHandle, index: Index, data: Result<Vec<u8>>| {
+    //     match data {
+    //         Ok(data) if data.is_empty() => h.tcp_close(index, on_close),
+    //         Ok(data) => h.tcp_write(index, &data, on_write),
+    //         Err(e) => eprintln!("{}", e),
+    //     };
+    // };
+    //
+    // let on_new_connection =
+    //     move |h: LoopHandle, index: Index, socket: Result<TcpSocketInfo>| match socket {
+    //         Ok(_) => h.tcp_read_start(index, on_read),
+    //         Err(e) => eprintln!("{}", e),
+    //     };
+    //
+    // match handle.tcp_listen("127.0.0.1:9000", on_new_connection) {
+    //     Ok(_) => println!("Server is listening on 127.0.0.1:9000"),
+    //     Err(e) => eprintln!("{}", e),
+    // };
+    //
+    // ============================================================================
 
     // TCP CLIENT EXAMPLE (uncomment to run)
 
@@ -845,7 +1012,10 @@ fn main() {
                 h.tcp_read_start(index, on_read);
                 h.tcp_write(index, HTTP_REQUEST.as_bytes(), on_write);
             }
-            Err(err) => println!("ERROR: {}", err),
+            Err(e) => {
+                eprintln!("{}", e);
+                h.tcp_close(index, |_: LoopHandle| {});
+            }
         };
 
     handle
