@@ -117,6 +117,7 @@ enum Action {
     TcpWriteReq(Index, Vec<u8>, TcpOnWrite),
     TcpReadStartReq(Index, TcpOnRead),
     TcpCloseReq(Index, OnClose),
+    TcpShutdownReq(Index),
 }
 
 enum Event {
@@ -232,6 +233,7 @@ impl EventLoop {
                 Action::TcpWriteReq(index, data, cb) => self.tcp_write_req(index, data, cb),
                 Action::TcpReadStartReq(index, cb) => self.tcp_read_start_req(index, cb),
                 Action::TcpCloseReq(index, cb) => self.tcp_close_req(index, cb),
+                Action::TcpShutdownReq(index) => self.tcp_shutdown_req(index),
             };
         }
         self.action_queue_empty.set(true);
@@ -695,6 +697,18 @@ impl EventLoop {
         // Schedule resource for graceful shutdown and removal.
         self.close_queue.push((index, on_close));
     }
+
+    /// Closes the write side of the stream.
+    fn tcp_shutdown_req(&mut self, index: Index) {
+        // Get resource by it's ID.
+        let resource = match self.resources.get_mut(&index) {
+            Some(resource) => resource,
+            None => return,
+        };
+
+        // Cast resource to TcpStreamWrap.
+        resource.downcast_mut::<TcpStreamWrap>().unwrap().close();
+    }
 }
 
 impl Default for EventLoop {
@@ -870,6 +884,12 @@ impl LoopHandle {
             .send(Action::TcpCloseReq(index, Box::new(on_close)))
             .unwrap();
 
+        self.actions_queue_empty.set(false);
+    }
+
+    /// Closes the write side of the TCP stream.
+    pub fn tcp_shutdown(&self, index: Index) {
+        self.actions.send(Action::TcpShutdownReq(index)).unwrap();
         self.actions_queue_empty.set(false);
     }
 }
