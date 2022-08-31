@@ -284,15 +284,15 @@ impl EventLoop {
         // Based on what resources the event-loop is currently running will decide
         // how long we should wait on the this phase.
         let timeout = match self.timer_queue.iter().next() {
-            Some((t, _)) => *t - Instant::now(),
-            None if self.pending_tasks > 0 => Duration::MAX,
-            None => Duration::ZERO,
+            Some((t, _)) => Some(*t - Instant::now()),
+            None if self.pending_tasks > 0 => None,
+            None => Some(Duration::ZERO),
         };
 
         let mut events = Events::with_capacity(1024);
 
         // Poll for new network events (this will block the thread).
-        self.poll.poll(&mut events, Some(timeout)).unwrap();
+        self.poll.poll(&mut events, timeout).unwrap();
 
         for event in &events {
             // Note: Token(0) is a special token signaling that someone woke us up.
