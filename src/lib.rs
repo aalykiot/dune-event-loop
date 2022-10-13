@@ -105,7 +105,7 @@ impl Resource for TcpListenerWrap {}
 #[allow(dead_code)]
 /// Useful information about a TCP socket.
 pub struct TcpSocketInfo {
-    id: Index,
+    pub id: Index,
     pub host: SocketAddr,
     pub remote: SocketAddr,
 }
@@ -218,7 +218,7 @@ impl EventLoop {
 
     /// Returns if there are pending events still ongoing.
     pub fn has_pending_events(&self) -> bool {
-        !(self.resources.is_empty() && self.action_queue_empty.get())
+        !(self.resources.is_empty() && self.action_queue_empty.get() && self.thread_pool_tasks == 0)
     }
 
     /// Performs a single tick of the event-loop.
@@ -300,12 +300,15 @@ impl EventLoop {
     fn run_poll(&mut self) {
         // Based on what resources the event-loop is currently running will decide
         // how long we should wait on the this phase.
-        let refs = self.check_queue.len() + self.close_queue.len();
-        let timeout = match self.timer_queue.iter().next() {
-            Some(_) if refs > 0 => Some(Duration::ZERO),
-            Some((t, _)) => Some(*t - Instant::now()),
-            None if refs > 0 => Some(Duration::ZERO),
-            None => None,
+        let timeout = if self.has_pending_events() {
+            let refs = self.check_queue.len() + self.close_queue.len();
+            match self.timer_queue.iter().next() {
+                _ if refs > 0 => Some(Duration::ZERO),
+                Some((t, _)) => Some(*t - Instant::now()),
+                None => None,
+            }
+        } else {
+            Some(Duration::ZERO)
         };
 
         let mut events = Events::with_capacity(1024);
@@ -991,107 +994,5 @@ impl LoopInterruptHandle {
     // Interrupts the poll phase of the event-loop.
     pub fn interrupt(&self) {
         self.waker.wake().unwrap();
-    }
-}
-
-fn main() {
-    let mut event_loop = EventLoop::new();
-    let handle = event_loop.handle();
-
-    // ============================================================================
-    //
-    // TIMERS EXAMPLE (uncomment to run)
-    //
-    // handle.timer(1000, false, |h: LoopHandle| {
-    //     println!("Hello!");
-    //     h.timer(2500, false, |_: LoopHandle| println!("Hello, world!"));
-    // });
-    //
-    // ============================================================================
-    //
-    // FILE SYSTEM OPERATIONS EXAMPLE (uncomment to run)
-    //
-    // let read_file = || {
-    //     let content = std::fs::read_to_string("./src/main.rs").unwrap();
-    //     Some(Ok(content.as_bytes().to_vec()))
-    // };
-    //
-    // let read_file_cb = |_: LoopHandle, result: TaskResult| {
-    //     let bytes = result.unwrap().unwrap();
-    //     let content = std::str::from_utf8(&bytes).unwrap();
-    //     println!("{}", content);
-    // };
-    //
-    // handle.spawn(read_file, Some(read_file_cb));
-    //
-    // ============================================================================
-    //
-    // TCP ECHO SERVER EXAMPLE (uncomment to run)
-    //
-    // let on_close = |_: LoopHandle| println!("Connection closed.");
-    //
-    // let on_write = |_: LoopHandle, _: Index, result: Result<usize>| {
-    //     if let Err(e) = result {
-    //         eprintln!("{}", e);
-    //     }
-    // };
-    //
-    // let on_read = move |h: LoopHandle, index: Index, data: Result<Vec<u8>>| {
-    //     match data {
-    //         Ok(data) if data.is_empty() => h.tcp_close(index, on_close),
-    //         Ok(data) => h.tcp_write(index, &data, on_write),
-    //         Err(e) => eprintln!("{}", e),
-    //     };
-    // };
-    //
-    // let on_new_connection =
-    //     move |h: LoopHandle, index: Index, socket: Result<TcpSocketInfo>| match socket {
-    //         Ok(_) => h.tcp_read_start(index, on_read),
-    //         Err(e) => eprintln!("{}", e),
-    //     };
-    //
-    // match handle.tcp_listen("127.0.0.1:9000", on_new_connection) {
-    //     Ok(_) => println!("Server is listening on 127.0.0.1:9000"),
-    //     Err(e) => eprintln!("{}", e),
-    // };
-    //
-    //
-    // ============================================================================
-
-    // TCP CLIENT EXAMPLE (uncomment to run)
-
-    let on_close = |_: LoopHandle| println!("Connection closed.");
-
-    let on_read = move |h: LoopHandle, index: Index, data: Result<Vec<u8>>| {
-        match data {
-            Ok(data) if data.is_empty() => h.tcp_close(index, on_close),
-            Ok(data) => println!("{}", String::from_utf8(data).unwrap()),
-            Err(err) => println!("ERROR: {}", err),
-        };
-    };
-
-    let on_write = |_: LoopHandle, _: Index, _: Result<usize>| {};
-
-    const HTTP_REQUEST: &str =
-        "GET / HTTP/1.1\r\nHost: rssweather.com\r\nConnection: close\r\n\r\n";
-
-    let on_connection =
-        move |h: LoopHandle, index: Index, socket: Result<TcpSocketInfo>| match socket {
-            Ok(_) => {
-                h.tcp_read_start(index, on_read);
-                h.tcp_write(index, HTTP_REQUEST.as_bytes(), on_write);
-            }
-            Err(e) => {
-                eprintln!("{}", e);
-                h.tcp_close(index, |_: LoopHandle| {});
-            }
-        };
-
-    handle
-        .tcp_connect("104.21.45.178:80", on_connection)
-        .unwrap();
-
-    while event_loop.has_pending_events() {
-        event_loop.tick();
     }
 }
