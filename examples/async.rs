@@ -9,7 +9,7 @@ fn main() {
     let handle = event_loop.handle();
 
     let read_file = || {
-        let content = std::fs::read_to_string("./examples/async_tasks.rs").unwrap();
+        let content = std::fs::read_to_string("./examples/async.rs").unwrap();
         Some(Ok(content.as_bytes().to_vec()))
     };
 
