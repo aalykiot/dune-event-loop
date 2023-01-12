@@ -462,16 +462,22 @@ impl EventLoop {
         }
 
         // Connection is OK, let's write some bytes...
+        let (data, on_write) = match tcp_wrap.write_queue.pop_front() {
+            Some(value) => value,
+            None => return,
+        };
 
-        if !tcp_wrap.write_queue.is_empty() {
-            // Get data and on_write callback.
-            let (data, on_write) = tcp_wrap.write_queue.pop_front().unwrap();
+        match tcp_wrap.socket.write(&data) {
+            Ok(n) => (on_write)(handle, index, Result::Ok(n)),
+            Err(err) => (on_write)(handle, index, Result::Err(err.into())),
+        };
 
-            // Try write some bytes to the socket.
-            match tcp_wrap.socket.write(&data) {
-                Ok(bytes_written) => (on_write)(handle, index, Result::Ok(bytes_written)),
-                Err(err) => (on_write)(handle, index, Result::Err(err.into())),
-            };
+        // Unregister write interest if the write_queue is empty.
+        if tcp_wrap.write_queue.is_empty() {
+            let token = Token(tcp_wrap.id as usize);
+            self.network_events
+                .reregister(&mut tcp_wrap.socket, token, Interest::READABLE)
+                .unwrap();
         }
     }
 
@@ -496,9 +502,8 @@ impl EventLoop {
         // Cast resource to TcpStreamWrap.
         let tcp_wrap = resource.downcast_mut::<TcpStreamWrap>().unwrap();
 
-        // Prepare the read buffer.
-        let mut buffer = vec![0; 4096];
-        let mut bytes_read = 0;
+        let mut data = vec![];
+        let mut data_buf = [0; 4096];
 
         // This will help us catch errors and FIN packets.
         let mut read_error: Option<io::Error> = None;
@@ -506,20 +511,14 @@ impl EventLoop {
 
         // We can (maybe) read from the connection.
         loop {
-            match tcp_wrap.socket.read(&mut buffer[bytes_read..]) {
+            match tcp_wrap.socket.read(&mut data_buf) {
                 // Reading 0 bytes means the other side has closed the
                 // connection or is done writing.
                 Ok(0) => {
                     connection_closed = true;
                     break;
                 }
-                Ok(n) => {
-                    bytes_read += n;
-                    // If the buffer is not big enough, extend it.
-                    if bytes_read == buffer.len() {
-                        buffer.resize(buffer.len() + 1024, 0);
-                    }
-                }
+                Ok(n) => data.extend_from_slice(&data_buf[..n]),
                 // Would block "errors" are the OS's way of saying that the
                 // connection is not actually ready to perform this I/O operation.
                 Err(err) if err.kind() == io::ErrorKind::WouldBlock => break,
@@ -535,6 +534,7 @@ impl EventLoop {
 
         let on_read = match tcp_wrap.on_read.as_mut() {
             Some(on_read) => on_read,
+            None if !connection_closed => return,
             None => {
                 self.close_queue.push((index, None));
                 return;
@@ -548,16 +548,14 @@ impl EventLoop {
             return;
         }
 
-        buffer.resize(bytes_read, 0);
-
-        match buffer.len() {
+        match data.len() {
             // FIN packet.
-            0 => (on_read)(handle, index, Result::Ok(buffer)),
+            0 => (on_read)(handle, index, Result::Ok(data)),
             // We read some bytes.
-            _ if !connection_closed => (on_read)(handle, index, Result::Ok(buffer)),
+            _ if !connection_closed => (on_read)(handle, index, Result::Ok(data)),
             // FIN packet is included to the bytes we read.
             _ => {
-                (on_read)(handle.clone(), index, Result::Ok(buffer));
+                (on_read)(handle.clone(), index, Result::Ok(data));
                 (on_read)(handle, index, Result::Ok(vec![]));
             }
         };
