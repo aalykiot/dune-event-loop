@@ -9,6 +9,8 @@ use mio::Poll;
 use mio::Registry;
 use mio::Token;
 use mio::Waker;
+use rayon::ThreadPool;
+use rayon::ThreadPoolBuilder;
 use std::any::type_name;
 use std::borrow::Cow;
 use std::cell::Cell;
@@ -20,13 +22,14 @@ use std::io::Read;
 use std::io::Write;
 use std::net::Shutdown;
 use std::net::SocketAddr;
+use std::num::NonZeroUsize;
 use std::rc::Rc;
 use std::sync::mpsc;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::thread;
 use std::time::Duration;
 use std::time::Instant;
-use threadpool::ThreadPool;
 
 /// Wrapper type for resource identification.
 pub type Index = u32;
@@ -169,11 +172,18 @@ pub struct EventLoop {
 
 impl EventLoop {
     /// Creates a new event-loop instance.
-    pub fn new() -> Self {
+    pub fn new(num_threads: usize) -> Self {
+        // Number of threads should always be a positive non-zero number.
+        assert!(num_threads > 0);
+
         let (action_dispatcher, action_queue) = mpsc::channel();
         let (event_dispatcher, event_queue) = mpsc::channel();
 
-        // Wrap event_dispatcher into a Arc<Mutex>.
+        let thread_pool = ThreadPoolBuilder::new()
+            .num_threads(num_threads)
+            .build()
+            .unwrap();
+
         let event_dispatcher = Arc::new(Mutex::new(event_dispatcher));
 
         // Create network handles.
@@ -190,7 +200,7 @@ impl EventLoop {
             action_dispatcher: Rc::new(action_dispatcher),
             check_queue: Vec::new(),
             close_queue: Vec::new(),
-            thread_pool: ThreadPool::new(4),
+            thread_pool,
             thread_pool_tasks: 0,
             event_dispatcher,
             event_queue,
@@ -659,7 +669,7 @@ impl EventLoop {
             self.resources.insert(index, Box::new(task_wrap));
         }
 
-        self.thread_pool.execute({
+        self.thread_pool.spawn({
             let waker = self.waker.clone();
             move || {
                 let result = (task)();
@@ -780,13 +790,10 @@ impl EventLoop {
 
 impl Default for EventLoop {
     fn default() -> Self {
-        Self::new()
-    }
-}
+        let default_pool_size = unsafe { NonZeroUsize::new_unchecked(4) };
+        let num_cores = thread::available_parallelism().unwrap_or(default_pool_size);
 
-impl std::ops::Drop for EventLoop {
-    fn drop(&mut self) {
-        self.thread_pool.join();
+        Self::new(num_cores.into())
     }
 }
 

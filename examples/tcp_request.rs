@@ -7,7 +7,7 @@ use ev_loop::LoopHandle;
 use ev_loop::TcpSocketInfo;
 
 fn main() {
-    let mut event_loop = EventLoop::new();
+    let mut event_loop = EventLoop::default();
     let handle = event_loop.handle();
 
     let on_close = |_: LoopHandle| println!("Connection closed.");

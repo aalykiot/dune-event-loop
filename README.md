@@ -2,6 +2,9 @@
 
 This library is a multi-platform support library with a focus on asynchronous I/O. It was primarily developed for use by [Dune](https://github.com/aalykiot/dune), but can be also used in any Rust project.
 
+![GitHub](https://img.shields.io/github/license/aalykiot/dune-event-loop?style=flat-square)
+![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/aalykiot/dune-event-loop/ci.yml?branch=main&style=flat-square)
+
 ## Features
 
 - Timers
@@ -14,7 +17,7 @@ This library is a multi-platform support library with a focus on asynchronous I/
 
 ```rust
 fn main() {
-    let mut event_loop = EventLoop::new();
+    let mut event_loop = EventLoop::default();
     let handle = event_loop.handle();
 
     handle.timer(1000, false, |h: LoopHandle| {
@@ -32,7 +35,7 @@ This library also provides a **thread-pool** which can be used to run user code 
 
 ```rust
 fn main() {
-    let mut event_loop = EventLoop::new();
+    let mut event_loop = EventLoop::default();
     let handle = event_loop.handle();
 
     let read_file = || {
@@ -58,7 +61,7 @@ fn main() {
 
 ```rust
 fn main() {
-    let mut event_loop = EventLoop::new();
+    let mut event_loop = EventLoop::default();
     let handle = event_loop.handle();
 
     let on_close = |_: LoopHandle| println!("Connection closed.");
