@@ -2,6 +2,9 @@
 
 This library is a multi-platform support library with a focus on asynchronous I/O. It was primarily developed for use by [Dune](https://github.com/aalykiot/dune), but can be also used in any Rust project.
 
+![GitHub](https://img.shields.io/github/license/aalykiot/dune-event-loop?style=flat-square)
+![GitHub Workflow Status](https://img.shields.io/github/actions/workflow/status/aalykiot/dune-event-loop/ci.yml?branch=main&style=flat-square)
+
 ## Features
 
 - Timers
