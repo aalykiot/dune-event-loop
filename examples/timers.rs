@@ -4,7 +4,7 @@ use ev_loop::EventLoop;
 use ev_loop::LoopHandle;
 
 fn main() {
-    let mut event_loop = EventLoop::new();
+    let mut event_loop = EventLoop::default();
     let handle = event_loop.handle();
 
     handle.timer(1000, false, |h: LoopHandle| {

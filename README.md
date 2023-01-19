@@ -14,7 +14,7 @@ This library is a multi-platform support library with a focus on asynchronous I/
 
 ```rust
 fn main() {
-    let mut event_loop = EventLoop::new();
+    let mut event_loop = EventLoop::default();
     let handle = event_loop.handle();
 
     handle.timer(1000, false, |h: LoopHandle| {
@@ -32,7 +32,7 @@ This library also provides a **thread-pool** which can be used to run user code 
 
 ```rust
 fn main() {
-    let mut event_loop = EventLoop::new();
+    let mut event_loop = EventLoop::default();
     let handle = event_loop.handle();
 
     let read_file = || {
@@ -58,7 +58,7 @@ fn main() {
 
 ```rust
 fn main() {
-    let mut event_loop = EventLoop::new();
+    let mut event_loop = EventLoop::default();
     let handle = event_loop.handle();
 
     let on_close = |_: LoopHandle| println!("Connection closed.");
