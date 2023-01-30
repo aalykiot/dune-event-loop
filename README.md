@@ -105,4 +105,32 @@ handle
     .unwrap();
 ```
 
+**FS handles** are used to watch specified paths for changes.
+
+```rust
+fn main() {
+    let mut event_loop = EventLoop::default();
+    let handle = event_loop.handle();
+
+    let on_event = |_: LoopHandle, event: FsEvent| {
+        println!("{event:?}");
+    };
+
+    let directory = "./examples/";
+    let rid = match handle.fs_event_start(directory, true, on_event) {
+        Ok(rid) => rid,
+        Err(e) => {
+            println!("{e}");
+            return;
+        }
+    };
+
+    handle.timer(10000, false, move |h: LoopHandle| h.fs_event_stop(&rid));
+
+    while event_loop.has_pending_events() {
+        event_loop.tick();
+    }
+}
+```
+
 > You can run all the above examples located in `/examples` folders using cargo: `cargo run --example [name]`

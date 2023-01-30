@@ -129,9 +129,9 @@ pub struct CheckWrap {
 
 impl Resource for CheckWrap {}
 
-/// Describes a file-system watcher with an event callback.
+/// Describes a file-system watcher.
 pub struct FsWatcherWrap {
-    pub w: Option<RecommendedWatcher>,
+    pub inner: Option<RecommendedWatcher>,
     pub on_event: Option<FsWatchOnEvent>,
     pub path: PathBuf,
     pub recursive: bool,
@@ -157,11 +157,11 @@ enum Action {
 }
 
 enum Event {
-    /// A thread-pool task is completed.
+    /// A thread-pool task has been completed.
     ThreadPool(Index, TaskResult),
     /// A network operation is available.
     Network(TcpEvent),
-    /// A file-system change detected.
+    /// A file-system change has been detected.
     Watch(Index, FsEvent),
 }
 
@@ -175,24 +175,18 @@ enum TcpEvent {
 
 /// An instance that knows how to handle fs events.
 struct FsEventHandler {
-    // Used to wake the event-loop from the poll phase.
+    id: Index,
     waker: Arc<Waker>,
-    // Used to send events to main thread.
     sender: Arc<Mutex<mpsc::Sender<Event>>>,
-    // The resource ID.
-    index: Index,
 }
 
 impl notify::EventHandler for FsEventHandler {
     /// Handles an event.
     fn handle_event(&mut self, event: notify::Result<FsEvent>) {
         // Notify the main thread about this fs event.
-        self.sender
-            .lock()
-            .unwrap()
-            .send(Event::Watch(self.index, event.unwrap()))
-            .unwrap();
+        let event = Event::Watch(self.id, event.unwrap());
 
+        self.sender.lock().unwrap().send(event).unwrap();
         self.waker.wake().unwrap();
     }
 }
@@ -691,20 +685,20 @@ impl EventLoop {
 
     /// Runs callback referring to specific fs event.
     fn fs_event(&mut self, index: Index, event: FsEvent) {
-        // Create a new handle.
-        let handle = self.handle();
-
         // Try to get a reference to the resource.
+        let handle = self.handle();
         let resource = match self.resources.get_mut(&index) {
             Some(resource) => resource,
             None => return,
         };
 
+        // Get a mut reference to the callback.
         let on_event = match resource.downcast_mut::<FsWatcherWrap>() {
             Some(w_wrap) => w_wrap.on_event.as_mut().unwrap(),
             None => return,
         };
 
+        // Run watcher's cb.
         (on_event)(handle, event);
     }
 }
@@ -859,28 +853,28 @@ impl EventLoop {
     }
 
     /// Subscribes a new fs watcher to the event-loop.
-    fn fs_event_start_req(&mut self, index: Index, mut w_wrap: FsWatcherWrap) {
+    fn fs_event_start_req(&mut self, index: Index, mut wrap: FsWatcherWrap) {
         // Create an appropriate watcher for the current system.
         let mut watcher = RecommendedWatcher::new(
             FsEventHandler {
                 waker: self.waker.clone(),
                 sender: self.event_dispatcher.clone(),
-                index,
+                id: index,
             },
             notify::Config::default(),
         )
         .unwrap();
 
-        let recursive_mode = match w_wrap.recursive {
-            false => RecursiveMode::NonRecursive,
-            _ => RecursiveMode::Recursive,
+        let recursive_mode = match wrap.recursive {
+            true => RecursiveMode::Recursive,
+            _ => RecursiveMode::NonRecursive,
         };
 
         // Start watching requested path(s).
-        watcher.watch(&w_wrap.path, recursive_mode).unwrap();
-        w_wrap.w = Some(watcher);
+        watcher.watch(&wrap.path, recursive_mode).unwrap();
 
-        self.resources.insert(index, Box::new(w_wrap));
+        wrap.inner = Some(watcher);
+        self.resources.insert(index, Box::new(wrap));
     }
 
     /// Stops an fs watcher and removes it from the event-loop.
@@ -1081,6 +1075,7 @@ impl LoopHandle {
             .unwrap();
 
         self.actions_queue_empty.set(false);
+
         index
     }
 
@@ -1091,22 +1086,23 @@ impl LoopHandle {
     }
 
     /// Creates a watcher that will watch the specified path for changes.
-    pub fn fs_event_start<F>(&self, path: &Path, recursive: bool, on_event: F) -> Result<Index>
+    pub fn fs_event_start<F, P>(&self, path: P, recursive: bool, on_event: F) -> Result<Index>
     where
         F: FnMut(LoopHandle, FsEvent) + 'static,
+        P: AsRef<Path>,
     {
         let index = self.index();
         let on_event = Box::new(on_event);
 
         // Check if path exists.
-        std::fs::metadata(path)?;
+        std::fs::metadata(path.as_ref())?;
 
         // Note: We don't have access to internal mpsc channels so will
         // create the watcher at a later stage.
         let watcher_wrap = FsWatcherWrap {
-            w: None,
+            inner: None,
             on_event: Some(on_event),
-            path: path.into(),
+            path: path.as_ref().to_path_buf(),
             recursive,
         };
 
@@ -1115,6 +1111,7 @@ impl LoopHandle {
             .unwrap();
 
         self.actions_queue_empty.set(false);
+
         Ok(index)
     }
 
