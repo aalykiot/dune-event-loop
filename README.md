@@ -8,8 +8,9 @@ This library is a multi-platform support library with a focus on asynchronous I/
 ## Features
 
 - Timers
-- Thread pool
 - Asynchronous TCP sockets
+- Thread pool
+- File system events
 
 ## Documentation
 
