@@ -380,7 +380,7 @@ impl EventLoop {
         for event in &events {
             // Note: Token(0) is a special token signaling that someone woke us up.
             if event.token() == Token(0) {
-                break;
+                continue;
             }
 
             let event_type = match (
