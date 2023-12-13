@@ -484,16 +484,16 @@ impl EventLoop {
         let tcp_wrap = resource.downcast_mut::<TcpStreamWrap>().unwrap();
 
         // Check if the socket is in error state.
-        if let Ok(Some(err)) | Err(err) = tcp_wrap.socket.take_error() {
+        if let Ok(Some(e)) | Err(e) = tcp_wrap.socket.take_error() {
             // If `on_connection` is available it means the socket error happened
             // while trying to connect.
             if let Some(on_connection) = tcp_wrap.on_connection.take() {
-                (on_connection)(handle, index, Result::Err(err.into()));
+                (on_connection)(handle, index, Result::Err(e.into()));
                 return;
             }
             // Otherwise the error happened while writing.
             if let Some((_, on_write)) = tcp_wrap.write_queue.pop_front() {
-                (on_write)(handle, index, Result::Err(err.into()));
+                (on_write)(handle, index, Result::Err(e.into()));
                 return;
             }
         }
@@ -536,21 +536,21 @@ impl EventLoop {
                 // write less we'll return a short write error (same as
                 // `io::Write::write_all` does).
                 Ok(n) if n < data.len() => {
-                    let err = anyhow!("{}", io::ErrorKind::WriteZero.to_string());
-                    (on_write)(handle, index, Result::Err(err))
+                    let err_message = io::ErrorKind::WriteZero.to_string();
+                    (on_write)(handle, index, Result::Err(anyhow!("{}", err_message)));
                 }
                 // All bytes were written to socket.
                 Ok(n) => (on_write)(handle, index, Result::Ok(n)),
                 // Would block "errors" are the OS's way of saying that the
                 // connection is not actually ready to perform this I/O operation.
-                Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
                     // We need to put the data buffer back.
                     tcp_wrap.write_queue.push_front((data, on_write));
                     break;
                 }
-                Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                 // An important error seems to have accrued.
-                Err(err) => (on_write)(handle, index, Result::Err(err.into())),
+                Err(e) => (on_write)(handle, index, Result::Err(e.into())),
             };
         }
 
@@ -603,10 +603,10 @@ impl EventLoop {
                 Ok(n) => data.extend_from_slice(&data_buf[..n]),
                 // Would block "errors" are the OS's way of saying that the
                 // connection is not actually ready to perform this I/O operation.
-                Err(err) if err.kind() == io::ErrorKind::WouldBlock => break,
-                Err(err) if err.kind() == io::ErrorKind::Interrupted => continue,
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                 // Other errors we'll be considered fatal.
-                Err(err) => read_error = Some(err),
+                Err(e) => read_error = Some(e),
             }
         }
 
@@ -629,9 +629,9 @@ impl EventLoop {
         };
 
         // Check if we had any errors while reading.
-        if let Some(err) = read_error {
+        if let Some(e) = read_error {
             // Run on_read callback.
-            (on_read)(handle, index, Result::Err(err.into()));
+            (on_read)(handle, index, Result::Err(e.into()));
             return;
         }
 
