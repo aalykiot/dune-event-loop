@@ -505,7 +505,7 @@ impl EventLoop {
         if let Some(on_connection) = tcp_wrap.on_connection.take() {
             // Run socket's on_connection callback.
             (on_connection)(
-                handle,
+                handle.clone(),
                 index,
                 Ok(TcpSocketInfo {
                     id: index,
@@ -519,8 +519,6 @@ impl EventLoop {
             self.network_events
                 .reregister(&mut tcp_wrap.socket, token, Interest::READABLE)
                 .unwrap();
-
-            return;
         }
 
         loop {
@@ -833,7 +831,7 @@ impl EventLoop {
         // Push data to socket's write queue.
         tcp_wrap.write_queue.push_back((data, on_write));
 
-        let interest = Interest::WRITABLE | Interest::READABLE;
+        let interest = Interest::READABLE.add(Interest::WRITABLE);
 
         self.network_events
             .reregister(&mut tcp_wrap.socket, token, interest)
@@ -856,7 +854,7 @@ impl EventLoop {
 
         let interest = match tcp_wrap.write_queue.len() {
             0 => Interest::READABLE,
-            _ => Interest::READABLE | Interest::WRITABLE,
+            _ => Interest::READABLE.add(Interest::WRITABLE),
         };
 
         self.network_events
