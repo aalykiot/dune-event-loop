@@ -339,7 +339,7 @@ impl EventLoop {
                 // Run timer's callback.
                 (timer.cb)(handle);
 
-                // If the timer is repeatable reschedule him, otherwise drop him.
+                // If the timer is repeatable reschedule it, otherwise drop it.
                 if timer.repeat {
                     let time_key = Instant::now() + timer.expires_at;
                     self.timer_queue.insert(time_key, *index);
@@ -544,7 +544,8 @@ impl EventLoop {
                 // Would block "errors" are the OS's way of saying that the
                 // connection is not actually ready to perform this I/O operation.
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
-                    // We need to put the data buffer back.
+                    // Since we couldn't send this data we need to put it
+                    // back into the write_queue.
                     tcp_wrap.write_queue.push_front((data, on_write));
                     break;
                 }
@@ -668,7 +669,7 @@ impl EventLoop {
         };
 
         let on_connection = tcp_wrap.on_connection.as_mut();
-        let mut resources = vec![];
+        let mut new_resources = vec![];
 
         loop {
             // Create a new handle.
@@ -715,11 +716,11 @@ impl EventLoop {
                 .register(&mut stream.socket, Token(id as usize), Interest::READABLE)
                 .unwrap();
 
-            resources.push((id, Box::new(stream)));
+            new_resources.push((id, Box::new(stream)));
         }
 
-        for (id, stream) in resources.drain(..) {
-            // Register the new TCP stream to the event-loop.
+        // Register the new TCP streams to the event-loop.
+        for (id, stream) in new_resources.drain(..) {
             self.resources.insert(id, stream);
         }
     }
