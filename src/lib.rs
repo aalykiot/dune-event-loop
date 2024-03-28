@@ -158,6 +158,7 @@ type SignalHandler = Box<dyn FnMut(LoopHandle, i32) + 'static>;
 
 /// Abstracts signal handling across platforms.
 struct OsSignals {
+    #[cfg(target_family = "unix")]
     sources: Signals,
     handlers: HashMap<i32, Vec<SignalWrap>>,
 }
@@ -185,7 +186,6 @@ impl OsSignals {
         ctrlc::set_handler(on_signal_handler).unwrap();
 
         OsSignals {
-            sources: Signals::new::<[_; 0], i32>([]).unwrap(),
             handlers: HashMap::new(),
         }
     }
