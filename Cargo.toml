@@ -11,7 +11,6 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-libc = "0.2.153"
 anyhow = "1.0.58"
 rayon = "1.6.1"
 downcast-rs = { version = "1.2.0", default-features = false }
@@ -30,3 +29,6 @@ features = ["channel", "iterator"]
 
 [target.'cfg(unix)'.dependencies]
 signal-hook-mio = { version = "0.2.3", features = ["support-v0_8"] }
+
+[target.'cfg(windows)'.dependencies]
+ctrlc = "3.4.4"

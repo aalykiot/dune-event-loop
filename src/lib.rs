@@ -43,11 +43,14 @@ use std::time::Instant;
 #[cfg(target_family = "unix")]
 use signal_hook_mio::v0_8::Signals;
 
+#[cfg(target_family = "windows")]
+use signal_hook::consts::SIGINT;
+
 /// Wrapper type for resource identification.
 pub type Index = u32;
 
 /// All objects that are tracked by the event-loop should implement the `Resource` trait.
-pub trait Resource: Downcast + 'static {
+trait Resource: Downcast + 'static {
     /// Returns a string representation of the resource.
     fn name(&self) -> Cow<str> {
         type_name::<Self>().into()
@@ -129,39 +132,40 @@ pub struct TcpSocketInfo {
 }
 
 /// Describes a callback that will run once after the Poll phase.
-pub struct CheckWrap {
+struct CheckWrap {
     cb: Option<OnCheck>,
 }
 
 impl Resource for CheckWrap {}
 
 /// Describes a file-system watcher.
-pub struct FsWatcherWrap {
-    pub inner: Option<RecommendedWatcher>,
-    pub on_event: Option<FsWatchOnEvent>,
-    pub path: PathBuf,
-    pub recursive: bool,
+struct FsWatcherWrap {
+    inner: Option<RecommendedWatcher>,
+    on_event: Option<FsWatchOnEvent>,
+    path: PathBuf,
+    recursive: bool,
 }
 
 impl Resource for FsWatcherWrap {}
 
-pub struct SignalWrap {
-    pub id: Index,
-    pub on_signal: SignalHandler,
-    pub oneshot: bool,
+struct SignalWrap {
+    id: Index,
+    on_signal: SignalHandler,
+    oneshot: bool,
 }
 
 type SignalHandler = Box<dyn FnMut(LoopHandle, i32) + 'static>;
 
 /// Abstracts signal handling across platforms.
-pub struct OsSignals {
-    pub sources: Signals,
-    pub handlers: HashMap<i32, Vec<SignalWrap>>,
+struct OsSignals {
+    sources: Signals,
+    handlers: HashMap<i32, Vec<SignalWrap>>,
 }
 
 impl OsSignals {
-    pub fn new(registry: &Registry) -> Self {
-        let mut sources = Signals::new(&[]).unwrap();
+    #[cfg(target_family = "unix")]
+    fn new(registry: &Registry) -> Self {
+        let mut sources = Signals::new::<[_; 0], i32>([]).unwrap();
         let _ = registry.register(&mut sources, Token(1), Interest::READABLE);
 
         OsSignals {
@@ -170,7 +174,24 @@ impl OsSignals {
         }
     }
 
-    pub fn run_pending(&mut self, handle: LoopHandle) {
+    #[cfg(target_family = "windows")]
+    fn new(notifier: Arc<Mutex<mpsc::Sender<Event>>>, waker: Arc<Waker>) -> Self {
+        // Spawn signal watching thread.
+        let on_signal_handler = move || {
+            notifier.lock().unwrap().send(Event::WinSigInt).unwrap();
+            waker.wake().unwrap();
+        };
+
+        ctrlc::set_handler(on_signal_handler).unwrap();
+
+        OsSignals {
+            sources: Signals::new::<[_; 0], i32>([]).unwrap(),
+            handlers: HashMap::new(),
+        }
+    }
+
+    #[cfg(target_family = "unix")]
+    fn run_pending(&mut self, handle: LoopHandle) {
         // Going through the available signals.
         for signal in self.sources.pending() {
             // Get all handlers for the given signal.
@@ -194,7 +215,25 @@ impl OsSignals {
         }
     }
 
-    pub fn remove_handler(&mut self, index: Index) {
+    #[cfg(target_family = "windows")]
+    fn run_pending(&mut self, handle: LoopHandle) {
+        // Going through the available signals.
+        if let Some(handlers) = self.handlers.get_mut(&SIGINT) {
+            // No listeners for this signal, running default action.
+            if handlers.is_empty() {
+                emulate_default_handler(SIGINT).unwrap();
+            }
+
+            handlers.retain_mut(|handler| {
+                // Run handler's callback.
+                (handler.on_signal)(handle.clone(), SIGINT);
+                // Keep the listener if it's not a oneshot.
+                !handler.oneshot
+            });
+        }
+    }
+
+    fn remove_handler(&mut self, index: Index) {
         // Note: Given the structure of this struct we're following the simplest
         // approach to remove the element with O(n^2) complexity. Further
         // improvements can be made in the future if necessary.
@@ -227,6 +266,7 @@ enum Action {
     SignalStopReq(Index),
 }
 
+#[allow(dead_code)]
 enum Event {
     /// A thread-pool task has been completed.
     ThreadPool(Index, TaskResult),
@@ -234,6 +274,8 @@ enum Event {
     Network(TcpEvent),
     /// A file-system change has been detected.
     Watch(Index, FsEvent),
+    /// An interrupt signal detected (Windows platform).
+    WinSigInt,
 }
 
 #[derive(Debug)]
@@ -303,11 +345,17 @@ impl EventLoop {
 
         // Create network handles.
         let poll = Poll::new().unwrap();
-        let waker = Waker::new(poll.registry(), Token(0)).unwrap();
         let registry = poll.registry().try_clone().unwrap();
+        let waker = Waker::new(poll.registry(), Token(0)).unwrap();
+        let waker = Arc::new(waker);
+
+        // Monitor system signals through dedicated thread.
+        #[cfg(target_family = "windows")]
+        let signals = OsSignals::new(event_dispatcher.clone(), waker.clone());
 
         // Monitor system signals through MIO.
-        let signals = OsSignals::new(poll.registry());
+        #[cfg(target_family = "unix")]
+        let signals = OsSignals::new(&registry);
 
         EventLoop {
             index: Rc::new(Cell::new(2)),
@@ -324,7 +372,7 @@ impl EventLoop {
             event_queue,
             poll,
             network_events: registry,
-            waker: Arc::new(waker),
+            waker,
             signals,
         }
     }
@@ -491,6 +539,7 @@ impl EventLoop {
                     TcpEvent::Write(index) => self.tcp_socket_write(index),
                     TcpEvent::Read(index) => self.tcp_socket_read(index),
                 },
+                Event::WinSigInt => self.signals.run_pending(self.handle()),
             }
             self.prepare();
         }
@@ -1009,6 +1058,7 @@ impl EventLoop {
     }
 
     /// Subscribes a new signal listener to the event-loop.
+    #[cfg(target_family = "unix")]
     fn signal_start_req(&mut self, signum: i32, signal_wrap: SignalWrap) {
         // Check if the specific signal is already being tracked.
         if let Some(handlers) = self.signals.handlers.get_mut(&signum) {
@@ -1017,6 +1067,16 @@ impl EventLoop {
         }
 
         self.signals.sources.add_signal(signum).unwrap();
+        self.signals.handlers.insert(signum, vec![signal_wrap]);
+    }
+
+    #[cfg(target_family = "windows")]
+    fn signal_start_req(&mut self, signum: i32, signal_wrap: SignalWrap) {
+        // Check if the specific signal is already being tracked.
+        if let Some(handlers) = self.signals.handlers.get_mut(&signum) {
+            handlers.push(signal_wrap);
+            return;
+        }
         self.signals.handlers.insert(signum, vec![signal_wrap]);
     }
 

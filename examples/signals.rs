@@ -13,7 +13,7 @@ fn main() {
     });
 
     let on_signal = move |_: LoopHandle, _: i32| {
-        println!("Signal detected!");
+        println!("Ctrl+C pressed!");
     };
 
     handle.signal_start_oneshot(SIGINT, on_signal).unwrap();
