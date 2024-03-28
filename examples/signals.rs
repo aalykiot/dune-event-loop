@@ -4,12 +4,11 @@ use ev_loop::EventLoop;
 use ev_loop::LoopHandle;
 use ev_loop::Signal::SIGINT;
 use std::cell::Cell;
-use std::rc::Rc;
 
 fn main() {
     let mut event_loop = EventLoop::default();
     let handle = event_loop.handle();
-    let ctrl_c = Rc::new(Cell::new(false));
+    let ctrl_c = Cell::new(false);
 
     // Exit the program on double CTRL+C.
     let on_signal = move |_: LoopHandle, _: i32| {
