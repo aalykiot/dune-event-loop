@@ -12,11 +12,11 @@ fn main() {
         println!("Hello!");
     });
 
-    let on_signal = |_: LoopHandle, _: i32| {
+    let on_signal = move |_: LoopHandle, _: i32| {
         println!("Signal detected!");
     };
 
-    handle.signal_start(SIGINT, on_signal).unwrap();
+    handle.signal_start_oneshot(SIGINT, on_signal).unwrap();
 
     while event_loop.has_pending_events() {
         event_loop.tick();

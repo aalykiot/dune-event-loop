@@ -193,6 +193,19 @@ impl OsSignals {
             });
         }
     }
+
+    pub fn remove_handler(&mut self, index: Index) {
+        // Note: Given the structure of this struct we're following the simplest
+        // approach to remove the element with O(n^2) complexity. Further
+        // improvements can be made in the future if necessary.
+        if let Some((_, list)) = self
+            .handlers
+            .iter_mut()
+            .find(|(_, list)| list.iter().any(|handler| handler.id == index))
+        {
+            list.retain(|handler| handler.id != index);
+        }
+    }
 }
 
 #[allow(clippy::enum_variant_names)]
@@ -1009,7 +1022,7 @@ impl EventLoop {
 
     /// Removes the signal listener from the event-loop.
     fn signal_stop_req(&mut self, index: Index) {
-        todo!();
+        self.signals.remove_handler(index)
     }
 }
 
@@ -1265,7 +1278,7 @@ impl LoopHandle {
             on_signal,
         };
 
-        // Check if the provided signum is valid for listening.
+        // Forbidden signals are not allowed to be registered.
         if signal_hook::consts::FORBIDDEN.contains(&signum) {
             bail!("Attempting to register forbidden signal: {signum}");
         }
@@ -1287,7 +1300,7 @@ impl LoopHandle {
         self.signal_init(signum, false, on_signal)
     }
 
-    /// Same functionality as signal_start() but the signal handler is reset the moment the signal is received.
+    /// Same functionality but the signal handler is reset the moment the signal is received.
     pub fn signal_start_oneshot<F>(&self, signum: i32, on_signal: F) -> Result<Index>
     where
         F: FnMut(LoopHandle, i32) + 'static,
