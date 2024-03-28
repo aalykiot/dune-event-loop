@@ -17,6 +17,7 @@ use notify::RecursiveMode;
 use notify::Watcher;
 use rayon::ThreadPool;
 use rayon::ThreadPoolBuilder;
+pub use signal_hook::consts::signal as Signal;
 use signal_hook::low_level::emulate_default_handler;
 use std::any::type_name;
 use std::borrow::Cow;
@@ -42,9 +43,6 @@ use std::time::Instant;
 
 #[cfg(target_family = "unix")]
 use signal_hook_mio::v0_8::Signals;
-
-#[cfg(target_family = "windows")]
-use signal_hook::consts::SIGINT;
 
 /// Wrapper type for resource identification.
 pub type Index = u32;
@@ -218,15 +216,15 @@ impl OsSignals {
     #[cfg(target_family = "windows")]
     fn run_pending(&mut self, handle: LoopHandle) {
         // Going through the available signals.
-        if let Some(handlers) = self.handlers.get_mut(&SIGINT) {
+        if let Some(handlers) = self.handlers.get_mut(&Signal::SIGINT) {
             // No listeners for this signal, running default action.
             if handlers.is_empty() {
-                emulate_default_handler(SIGINT).unwrap();
+                emulate_default_handler(Signal::SIGINT).unwrap();
             }
 
             handlers.retain_mut(|handler| {
                 // Run handler's callback.
-                (handler.on_signal)(handle.clone(), SIGINT);
+                (handler.on_signal)(handle.clone(), Signal::SIGINT);
                 // Keep the listener if it's not a oneshot.
                 !handler.oneshot
             });
