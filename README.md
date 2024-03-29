@@ -174,7 +174,7 @@ For terminating the listener, `signal_stop()` serves as the appropriate function
 ```rust
 let token = handle.signal_start(SIGINT, on_signal).unwrap();
 
-handle.signal_stop(token);
+handle.signal_stop(&token);
 ```
 
 > You can run all the above examples located in `/examples` folders using cargo: `cargo run --example [name]`

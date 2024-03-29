@@ -146,6 +146,34 @@ struct FsWatcherWrap {
 
 impl Resource for FsWatcherWrap {}
 
+// Based on linux systems the max allowed signal number is 31.
+// https://www-uxsup.csx.cam.ac.uk/courses/moved.Building/signals.pdf
+const MAX_SIGNAL_VALUE: i32 = 31;
+
+#[derive(Debug)]
+struct SignalNum(i32);
+
+impl SignalNum {
+    // Note: This allows us to have signal validation on the type level
+    // instead in the logic when used.
+    fn parse(signal: i32) -> Result<Self> {
+        // Check if signal is within UNIX range.
+        if signal > MAX_SIGNAL_VALUE {
+            bail!("Signal number out of range.");
+        }
+        // Forbidden signals are not allowed to be registered.
+        if signal_hook::consts::FORBIDDEN.contains(&signal) {
+            bail!("Forbidden signal provided.");
+        }
+
+        Ok(SignalNum(signal))
+    }
+
+    fn to_i32(&self) -> i32 {
+        self.0
+    }
+}
+
 struct SignalWrap {
     id: Index,
     on_signal: SignalHandler,
@@ -260,7 +288,7 @@ enum Action {
     CheckRemoveReq(Index),
     FsEventStartReq(Index, FsWatcherWrap),
     FsEventStopReq(Index),
-    SignalStartReq(i32, SignalWrap),
+    SignalStartReq(SignalNum, SignalWrap),
     SignalStopReq(Index),
 }
 
@@ -1056,24 +1084,17 @@ impl EventLoop {
     }
 
     /// Subscribes a new signal listener to the event-loop.
-    #[cfg(target_family = "unix")]
-    fn signal_start_req(&mut self, signum: i32, signal_wrap: SignalWrap) {
+    fn signal_start_req(&mut self, signum: SignalNum, signal_wrap: SignalWrap) {
         // Check if the specific signal is already being tracked.
+        let signum = signum.to_i32();
         if let Some(handlers) = self.signals.handlers.get_mut(&signum) {
             handlers.push(signal_wrap);
             return;
         }
 
-        self.signals.sources.add_signal(signum).unwrap();
-        self.signals.handlers.insert(signum, vec![signal_wrap]);
-    }
-
-    #[cfg(target_family = "windows")]
-    fn signal_start_req(&mut self, signum: i32, signal_wrap: SignalWrap) {
-        // Check if the specific signal is already being tracked.
-        if let Some(handlers) = self.signals.handlers.get_mut(&signum) {
-            handlers.push(signal_wrap);
-            return;
+        #[cfg(target_family = "unix")]
+        {
+            self.signals.sources.add_signal(signum).unwrap();
         }
         self.signals.handlers.insert(signum, vec![signal_wrap]);
     }
@@ -1327,6 +1348,9 @@ impl LoopHandle {
     where
         F: FnMut(LoopHandle, i32) + 'static,
     {
+        // Parse signal number provided.
+        let signum = SignalNum::parse(signum)?;
+
         let index = self.index();
         let on_signal = Box::new(on_signal);
 
@@ -1335,11 +1359,6 @@ impl LoopHandle {
             oneshot,
             on_signal,
         };
-
-        // Forbidden signals are not allowed to be registered.
-        if signal_hook::consts::FORBIDDEN.contains(&signum) {
-            bail!("Attempting to register forbidden signal: {signum}");
-        }
 
         self.actions
             .send(Action::SignalStartReq(signum, signal_wrap))
