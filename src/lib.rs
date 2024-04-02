@@ -243,20 +243,25 @@ impl OsSignals {
 
     #[cfg(target_family = "windows")]
     fn run_pending(&mut self, handle: LoopHandle) {
-        // Going through the available signals.
-        if let Some(handlers) = self.handlers.get_mut(&Signal::SIGINT) {
-            // No listeners for this signal, running default action.
-            if handlers.is_empty() {
+        // Note: In Windows, a dedicated thread is always on standby to listen for
+        // CTRL+C signals. Consequently, this function may be activated even if a
+        // signal handler was never initiated. Therefore, it's necessary to mimic
+        // the default action when no signals are registered or if the list of
+        // handlers is currently empty.
+        let handlers = match self.handlers.get_mut(&Signal::SIGINT) {
+            Some(handlers) if !handlers.is_empty() => handlers,
+            _ => {
                 emulate_default_handler(Signal::SIGINT).unwrap();
+                return;
             }
+        };
 
-            handlers.retain_mut(|handler| {
-                // Run handler's callback.
-                (handler.on_signal)(handle.clone(), Signal::SIGINT);
-                // Keep the listener if it's not a oneshot.
-                !handler.oneshot
-            });
-        }
+        handlers.retain_mut(|handler| {
+            // Run handler's callback.
+            (handler.on_signal)(handle.clone(), Signal::SIGINT);
+            // Keep the listener if it's not a oneshot.
+            !handler.oneshot
+        });
     }
 
     fn remove_handler(&mut self, index: Index) {
