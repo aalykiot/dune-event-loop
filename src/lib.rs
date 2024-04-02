@@ -505,8 +505,8 @@ impl EventLoop {
 
     /// Polls for new I/O events (async-tasks, networking, etc).
     fn run_poll(&mut self) {
-        // Based on what resources the event-loop is currently running will decide
-        // how long we should wait on the this phase.
+        // Based on what resources the event-loop is currently running will
+        // decide how long we should wait on the this phase.
         let timeout = if self.has_pending_events() {
             let refs = self.check_queue.len() + self.close_queue.len();
             match self.timer_queue.iter().next() {
