@@ -11,8 +11,24 @@ edition = "2021"
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
 
 [dependencies]
-anyhow = "1.0.58"
-rayon = "1.6.1"
+anyhow = "1.0.81"
+rayon = "1.10.0"
 downcast-rs = { version = "1.2.0", default-features = false }
-mio = { version = "0.8.4", features = ["os-poll", "net"] }
+mio = { version = "0.8.11", features = ["os-poll", "net"] }
 notify = "6.1.1"
+
+[dependencies.signal-hook]
+version = "0.3.17"
+default-features = false
+features = ["channel"]
+
+[target.'cfg(unix)'.dependencies.signal-hook]
+version = "0.3.17"
+default-features = false
+features = ["channel", "iterator"]
+
+[target.'cfg(unix)'.dependencies]
+signal-hook-mio = { version = "0.2.3", features = ["support-v0_8"] }
+
+[target.'cfg(windows)'.dependencies]
+ctrlc = "3.4.4"

@@ -11,10 +11,11 @@ This library is a multi-platform support library with a focus on asynchronous I/
 - Asynchronous TCP sockets
 - Thread pool
 - File system events
+- Signals
 
 ## Documentation
 
-**Timer** handles are used to schedule callbacks to be called in the future.
+**Timer handles** are used to schedule callbacks to be called in the future.
 
 ```rust
 fn main() {
@@ -132,6 +133,48 @@ fn main() {
         event_loop.tick();
     }
 }
+```
+
+**Signal handles** are wrappers around UNIX signals with some Windows support as well.
+
+> Certain signals, such as `SIGKILL` or `SIGSTOP`, cannot be overridden or subscribed to. Additionally, on the Windows platform, only `SIGINT` is supported.
+
+```rust
+fn main() {
+    let mut event_loop = EventLoop::default();
+    let handle = event_loop.handle();
+    let ctrl_c = Rc::new(Cell::new(false));
+
+    // Exit the program on double CTRL+C.
+    let on_signal = move |_: LoopHandle, _: i32| {
+        match ctrl_c.get() {
+            true => std::process::exit(0),
+            false => ctrl_c.set(true),
+        };
+    };
+
+    handle.signal_start(SIGINT, on_signal).unwrap();
+
+    loop {
+        // We need somehow to keep the program running cause signal
+        // listeners wont keep the event-loop alive.
+        event_loop.tick();
+    }
+}
+```
+
+To create one-time signal handles, utilize the `signal_start_oneshot()` function.
+
+```rust
+handle.signal_start_oneshot(SIGINT, on_signal).unwrap();
+```
+
+For terminating the listener, `signal_stop()` serves as the appropriate function.
+
+```rust
+let token = handle.signal_start(SIGINT, on_signal).unwrap();
+
+handle.signal_stop(&token);
 ```
 
 > You can run all the above examples located in `/examples` folders using cargo: `cargo run --example [name]`
