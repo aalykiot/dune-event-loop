@@ -1,8 +1,8 @@
 [package]
 name = "dune_event_loop"
-description = "Dune's event-loop library used for timers, async tasks and TCP connections"
+description = "A multi-platform event loop library 🎡"
 authors = ["Alex Alikiotis <alexalikiotis5@gmail.com>"]
-version = "0.1.0"
+version = "0.1.1"
 repository = "https://gitlab.com/aalykiot/ev_loop"
 license = "MIT"
 readme = "README.md"
