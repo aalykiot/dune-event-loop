@@ -2,7 +2,7 @@
 name = "dune_event_loop"
 description = "A multi-platform event loop library 🎡"
 authors = ["Alex Alikiotis <alexalikiotis5@gmail.com>"]
-version = "0.1.1"
+version = "0.1.2"
 repository = "https://gitlab.com/aalykiot/ev_loop"
 license = "MIT"
 readme = "README.md"
@@ -15,7 +15,7 @@ anyhow = "1.0.81"
 rayon = "1.10.0"
 downcast-rs = { version = "1.2.0", default-features = false }
 mio = { version = "0.8.11", features = ["os-poll", "net"] }
-notify = "6.1.1"
+notify = "7.0.0"
 
 [dependencies.signal-hook]
 version = "0.3.17"
