@@ -12,6 +12,7 @@ use mio::Registry;
 use mio::Token;
 use mio::Waker;
 pub use notify::Event as FsEvent;
+pub use notify::EventKind as FsEventKind;
 use notify::RecommendedWatcher;
 use notify::RecursiveMode;
 use notify::Watcher;
