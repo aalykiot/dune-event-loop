@@ -41,7 +41,7 @@ use std::time::Duration;
 use std::time::Instant;
 
 #[cfg(target_family = "unix")]
-use signal_hook_mio::v0_8::Signals;
+use signal_hook_mio::v1_0::Signals;
 
 /// Wrapper type for resource identification.
 pub type Index = u32;
