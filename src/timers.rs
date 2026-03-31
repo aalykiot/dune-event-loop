@@ -59,4 +59,30 @@ impl Timer {
     pub fn run_callback(&mut self, handle: LoopHandle) {
         (self.callback)(handle);
     }
+
+    /// Returns a handle to the timer resource.
+    pub fn handle(&self, handle: LoopHandle) -> TimerHandle {
+        TimerHandle {
+            id: self.id.clone(),
+            handle,
+        }
+    }
+}
+
+/// A reference like struct to an active timer.
+#[derive(Debug, Clone)]
+pub struct TimerHandle {
+    /// A shared pointer to the resource ID of the timer.
+    pub(crate) id: Rc<Cell<ResourceId>>,
+    /// A handle to the event-loop.
+    handle: LoopHandle,
+}
+
+impl TimerHandle {
+    /// Cancels the scheduled timer.
+    pub fn cancel(self) {
+        // Consume self and call the internal cancle_timer method.
+        let handle = self.handle.clone();
+        handle.cancel_timer(self);
+    }
 }

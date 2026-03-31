@@ -1,14 +1,19 @@
 use crate::thread_pool::ThreadPool;
 use crate::timers::Timer;
+use crate::timers::TimerHandle;
 use crate::timers::TimerKind;
 use crate::timers::TimersCollection;
 use downcast_rs::impl_downcast;
 use downcast_rs::Downcast;
 use slotmap::DefaultKey;
+use slotmap::Key;
 use slotmap::SlotMap;
 use std::cell::Cell;
+use std::num::NonZeroUsize;
 use std::rc::Rc;
 use std::sync::mpsc;
+use std::thread;
+use std::time::Duration;
 use std::time::Instant;
 
 /// A type alias for resource identification.
@@ -22,7 +27,10 @@ pub trait Resource: Downcast + 'static {
 
 impl_downcast!(Resource);
 
-enum Request {}
+enum Request {
+    StartTimer(Timer),
+    CancelTimer(TimerHandle),
+}
 
 pub struct EventLoop {
     current_time: Instant,
@@ -62,10 +70,20 @@ impl EventLoop {
         }
     }
 
+    /// Returns if there is pending work still ongoing.
+    pub fn has_pending_events(&self) -> bool {
+        !self.resources.is_empty()
+            || !self.request_queue_empty.get()
+            || self.thread_pool.pending_count() != 0
+    }
+
     /// Drains the request_queue to schedule new workload.
     fn process_requests(&mut self) {
         while let Ok(request) = self.request_queue.try_recv() {
-            match request {}
+            match request {
+                Request::StartTimer(timer) => self.start_timer(timer),
+                Request::CancelTimer(handle) => self.cancel_timer(handle),
+            }
         }
         self.request_queue_empty.set(true);
     }
@@ -105,10 +123,79 @@ impl EventLoop {
             }
         }
     }
+
+    /// Schedules a new timer in the event-loop.
+    fn start_timer(&mut self, timer: Timer) {
+        // First insert the new timer into the resources map, then set its
+        // resource ID to the value returned by the insertion operation.
+        let expires_at = self.current_time + timer.delay;
+
+        let resource_id_slot = timer.id.clone();
+        let resource_id = self.resources.insert(Box::new(timer));
+
+        resource_id_slot.set(resource_id);
+
+        self.timers.insert(expires_at, resource_id);
+    }
+
+    /// Removes a previously scheduled timer.
+    fn cancel_timer(&mut self, handle: TimerHandle) {
+        // To achieve O(1) cancellation, we remove the resource but keep the entry
+        // in the timer collection. When processing expired timers, canceled
+        // ones are simply ignored.
+        self.resources.remove(handle.id.get());
+    }
+}
+
+impl Default for EventLoop {
+    fn default() -> Self {
+        let default_pool_size = NonZeroUsize::new(4).unwrap();
+        let num_cores = thread::available_parallelism().unwrap_or(default_pool_size);
+
+        Self::new(num_cores.into())
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct LoopHandle {
     request_sender: Rc<mpsc::Sender<Request>>,
     request_queue_empty: Rc<Cell<bool>>,
+}
+
+impl LoopHandle {
+    /// Schedules a new timer to the event-loop.
+    pub fn timer<F>(&self, delay: Duration, kind: TimerKind, callback: F) -> TimerHandle
+    where
+        F: FnMut(LoopHandle) + 'static,
+    {
+        // Since the resource is not yet scheduled in the event-loop, we create a
+        // null ID. The event-loop will update this value with a real ID later.
+        let id = Rc::new(Cell::new(DefaultKey::null()));
+        let callback = Box::new(callback);
+
+        let timer = Timer {
+            id,
+            delay,
+            kind,
+            callback,
+        };
+
+        // Create a timer handle that we will return to the caller.
+        let handle = timer.handle(self.clone());
+        let request = Request::StartTimer(timer);
+
+        self.request_sender.send(request).unwrap();
+        self.request_queue_empty.set(false);
+
+        handle
+    }
+
+    /// Removes a timer from the event-loop.
+    pub fn cancel_timer(&self, handle: TimerHandle) {
+        // Send a cancel request.
+        let request = Request::CancelTimer(handle);
+
+        self.request_sender.send(request).unwrap();
+        self.request_queue_empty.set(false);
+    }
 }
