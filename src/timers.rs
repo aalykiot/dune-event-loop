@@ -1,4 +1,5 @@
 use crate::event_loop::LoopHandle;
+use crate::event_loop::Resource;
 use crate::event_loop::ResourceId;
 use std::cell::Cell;
 use std::collections::BTreeMap;
@@ -49,4 +50,13 @@ pub(crate) struct Timer {
     pub delay: Duration,
     pub callback: TimerCallback,
     pub kind: TimerKind,
+}
+
+impl Resource for Timer {}
+
+impl Timer {
+    /// Runs the callback of the timer.
+    pub fn run_callback(&mut self, handle: LoopHandle) {
+        (self.callback)(handle);
+    }
 }
