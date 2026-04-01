@@ -1,3 +1,4 @@
+use crate::tcp_connection::TcpEventKind;
 use crate::thread_pool::ThreadPool;
 use crate::timers::Timer;
 use crate::timers::TimerHandle;
@@ -5,6 +6,10 @@ use crate::timers::TimerKind;
 use crate::timers::TimersCollection;
 use downcast_rs::impl_downcast;
 use downcast_rs::Downcast;
+use mio::Poll;
+use mio::Registry;
+use mio::Token;
+use mio::Waker;
 use slotmap::DefaultKey;
 use slotmap::Key;
 use slotmap::SlotMap;
@@ -12,6 +17,8 @@ use std::cell::Cell;
 use std::num::NonZeroUsize;
 use std::rc::Rc;
 use std::sync::mpsc;
+use std::sync::Arc;
+use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
@@ -32,6 +39,12 @@ enum Request {
     CancelTimer(TimerHandle),
 }
 
+#[allow(dead_code)]
+enum Event {
+    /// A network operation is available.
+    Network(TcpEventKind),
+}
+
 pub struct EventLoop {
     current_time: Instant,
     resources: SlotMap<ResourceId, Box<dyn Resource>>,
@@ -40,6 +53,11 @@ pub struct EventLoop {
     request_queue_empty: Rc<Cell<bool>>,
     request_sender: Rc<mpsc::Sender<Request>>,
     thread_pool: ThreadPool,
+    event_queue: mpsc::Receiver<Event>,
+    event_sender: mpsc::Sender<Event>,
+    registry: Registry,
+    poll: Poll,
+    waker: Arc<Waker>,
 }
 
 impl EventLoop {
@@ -49,7 +67,16 @@ impl EventLoop {
         assert!(num_threads > 0);
 
         let thread_pool = ThreadPool::new(num_threads);
+
         let (request_sender, request_queue) = mpsc::channel();
+        let (event_sender, event_queue) = mpsc::channel();
+
+        // Initialize the kernel notification multiplexer.
+        let poll = Poll::new().unwrap();
+        let registry = poll.registry().try_clone().unwrap();
+
+        let waker = Waker::new(poll.registry(), Token(0)).unwrap();
+        let waker = Arc::new(waker);
 
         EventLoop {
             current_time: Instant::now(),
@@ -59,6 +86,11 @@ impl EventLoop {
             request_queue_empty: Rc::new(Cell::new(true)),
             request_sender: Rc::new(request_sender),
             thread_pool,
+            event_queue,
+            event_sender,
+            registry,
+            poll,
+            waker,
         }
     }
 

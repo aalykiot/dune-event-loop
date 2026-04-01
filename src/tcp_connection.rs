@@ -1,0 +1,230 @@
+use crate::event_loop::LoopHandle;
+use crate::event_loop::Resource;
+use crate::event_loop::ResourceId;
+use anyhow::anyhow;
+use anyhow::Result;
+use mio::net::TcpStream;
+use mio::Interest;
+use mio::Registry;
+use mio::Token;
+use slotmap::Key;
+use std::cell::Cell;
+use std::collections::LinkedList;
+use std::io;
+use std::io::Read;
+use std::io::Write;
+use std::net::Shutdown;
+use std::net::SocketAddr;
+use std::rc::Rc;
+
+pub type TcpOnConnectionCallback =
+    Box<dyn FnOnce(LoopHandle, TcpConnectionHandle, Result<SocketInfo>) + 'static>;
+
+pub type TcpOnReadCallback =
+    Box<dyn FnMut(LoopHandle, TcpConnectionHandle, Result<Vec<u8>>) + 'static>;
+
+pub type TcpOnWriteCallback =
+    Box<dyn FnOnce(LoopHandle, TcpConnectionHandle, Result<usize>) + 'static>;
+
+/// Information about the underlying tcp socket.
+pub struct SocketInfo {
+    pub host: SocketAddr,
+    pub remote: SocketAddr,
+}
+
+/// Indicates the kind of readiness in the socket.
+pub(crate) enum TcpEventKind {
+    /// Socket is ready for reading.
+    Read(ResourceId),
+    /// Socket is ready for writing.
+    Write(ResourceId),
+}
+
+/// The data required for a tcp connection resource.
+pub(crate) struct TcpConnection {
+    id: Rc<Cell<ResourceId>>,
+    socket: TcpStream,
+    on_connection: Option<TcpOnConnectionCallback>,
+    on_read: Option<TcpOnReadCallback>,
+    write_queue: LinkedList<(Vec<u8>, TcpOnWriteCallback)>,
+}
+
+impl Resource for TcpConnection {
+    #[allow(unused_must_use)]
+    fn close(&mut self) {
+        // Shutdown the write side of the stream.
+        self.socket.shutdown(Shutdown::Write);
+    }
+}
+
+impl TcpConnection {
+    /// Tries to read from a ready TCP socket. Ready means that
+    /// the operation won't block the current thread.
+    pub fn read_from_socket(&mut self, handle: LoopHandle, registry: &mut Registry) {
+        // Create buffers for reading data.
+        let mut data = vec![];
+        let mut data_buf = [0; 4096];
+
+        // This will help us catch errors and FIN packets.
+        let mut read_error: Option<io::Error> = None;
+        let mut is_eof = false;
+
+        // We can probably read from the socket connection.
+        loop {
+            match self.socket.read(&mut data_buf) {
+                // Reading 0 bytes means the other side has closed the
+                // connection or is done writing.
+                Ok(0) => {
+                    is_eof = true;
+                    break;
+                }
+                Ok(n) => data.extend_from_slice(&data_buf[..n]),
+                // Would block "errors" are the OS's way of saying that the connection
+                // is not actually ready to perform this I/O operation.
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                // Other errors we'll be considered fatal.
+                Err(e) => read_error = Some(e),
+            }
+        }
+
+        // NOTE: If a FIN packet received without us listening on the TCP stream, it means that
+        // the other side closed the connection so we'll schedule the resource for removal.
+        let on_read = match self.on_read.as_mut() {
+            Some(on_read) => on_read,
+            None if !is_eof => return,
+            None => {
+                // Deregister any interest on that socket.
+                registry.deregister(&mut self.socket).unwrap();
+                // Schedule resource clean-up.
+                // TODO: self.close_queue.push((index, None));
+                return;
+            }
+        };
+
+        let tcp_handle = TcpConnectionHandle {
+            id: self.id.clone(),
+            handle: handle.clone(),
+        };
+
+        // Check if we had any errors while reading.
+        if let Some(e) = read_error {
+            (on_read)(handle, tcp_handle, Err(e.into()));
+            return;
+        }
+
+        match data.len() {
+            // FIN packet.
+            0 => (on_read)(handle, tcp_handle, Ok(data)),
+            // We read some bytes.
+            _ if !is_eof => (on_read)(handle, tcp_handle, Ok(data)),
+            // FIN packet is included to the bytes we read.
+            _ => {
+                (on_read)(handle.clone(), tcp_handle.clone(), Ok(data));
+                (on_read)(handle, tcp_handle, Ok(vec![]));
+            }
+        };
+    }
+
+    /// Tries to read from a ready TCP socket. Ready means that
+    /// the operation won't block the current thread.
+    pub fn write_to_socket(&mut self, handle: LoopHandle, registry: &mut Registry) {
+        // Create a handle to the resource.
+        let tcp_handle = TcpConnectionHandle {
+            id: self.id.clone(),
+            handle: handle.clone(),
+        };
+
+        // Check if the socket is in error state.
+        if let Ok(Some(e)) | Err(e) = self.socket.take_error() {
+            // If `on_connection` is available it means the socket error happened
+            // while trying to connect.
+            if let Some(on_connection) = self.on_connection.take() {
+                (on_connection)(handle, tcp_handle, Err(e.into()));
+                return;
+            }
+            // Otherwise the error happened while writing.
+            if let Some((_, on_write)) = self.write_queue.pop_front() {
+                (on_write)(handle, tcp_handle, Err(e.into()));
+                return;
+            }
+        }
+
+        // If the on_connection callback is None it means that in some previous iteration
+        // we made sure the TCP socket is well connected with the remote host.
+        if let Some(on_connection) = self.on_connection.take() {
+            // Run socket's on_connection callback.
+            (on_connection)(
+                handle.clone(),
+                tcp_handle.clone(),
+                Ok(SocketInfo {
+                    host: self.socket.local_addr().unwrap(),
+                    remote: self.socket.peer_addr().unwrap(),
+                }),
+            );
+
+            let token = Token(self.get_resource_id());
+
+            registry
+                .reregister(&mut self.socket, token, Interest::READABLE)
+                .unwrap();
+        }
+
+        loop {
+            // Due to loop ownership issues we need to clone the handle.
+            let handle = handle.clone();
+            let tcp_handle = tcp_handle.clone();
+
+            // Connection is okay, let's write some bytes.
+            let (data, on_write) = match self.write_queue.pop_front() {
+                Some(value) => value,
+                None => break,
+            };
+
+            match self.socket.write(&data) {
+                // We want to write the entire `data` buffer in a single go. If we
+                // write less we'll return a short write error (same as
+                // `io::Write::write_all` does).
+                Ok(n) if n < data.len() => {
+                    let err_message = io::ErrorKind::WriteZero.to_string();
+                    (on_write)(handle, tcp_handle, Err(anyhow!("{}", err_message)));
+                }
+                // All bytes were written to socket.
+                Ok(n) => (on_write)(handle, tcp_handle, Ok(n)),
+                // Would block "errors" are the OS's way of saying that the
+                // connection is not actually ready to perform this I/O operation.
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
+                    // Since we couldn't send this data we need to put it
+                    // back into the write_queue.
+                    self.write_queue.push_front((data, on_write));
+                    break;
+                }
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                // An important error seems to have accrued.
+                Err(e) => (on_write)(handle, tcp_handle, Err(e.into())),
+            };
+        }
+
+        // Unregister write interest if the write_queue is empty.
+        if self.write_queue.is_empty() {
+            let token = Token(self.get_resource_id());
+            registry
+                .reregister(&mut self.socket, token, Interest::READABLE)
+                .unwrap();
+        }
+    }
+
+    /// Returns the resource id as a usize.
+    fn get_resource_id(&self) -> usize {
+        self.id.get().data().as_ffi() as usize
+    }
+}
+
+/// A reference like struct to an active tcp connection.
+#[derive(Debug, Clone)]
+pub struct TcpConnectionHandle {
+    /// A shared pointer to the resource ID of the connection.
+    pub(crate) id: Rc<Cell<ResourceId>>,
+    /// A handle to the event-loop.
+    handle: LoopHandle,
+}

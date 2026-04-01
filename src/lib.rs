@@ -1,4 +1,5 @@
 pub mod event_loop;
+pub mod tcp_connection;
 pub mod thread_pool;
 pub mod timers;
 
