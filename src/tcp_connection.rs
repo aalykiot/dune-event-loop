@@ -9,7 +9,7 @@ use mio::Registry;
 use mio::Token;
 use slotmap::Key;
 use std::cell::Cell;
-use std::collections::LinkedList;
+use std::collections::VecDeque;
 use std::io;
 use std::io::Read;
 use std::io::Write;
@@ -46,7 +46,7 @@ pub(crate) struct TcpConnection {
     socket: TcpStream,
     on_connection: Option<TcpOnConnectionCallback>,
     on_read: Option<TcpOnReadCallback>,
-    write_queue: LinkedList<(Vec<u8>, TcpOnWriteCallback)>,
+    write_queue: VecDeque<(Vec<u8>, TcpOnWriteCallback)>,
 }
 
 impl Resource for TcpConnection {
