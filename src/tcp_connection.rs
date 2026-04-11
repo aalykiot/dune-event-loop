@@ -1,3 +1,4 @@
+use crate::event_loop::BasicQueue;
 use crate::event_loop::LoopHandle;
 use crate::event_loop::Resource;
 use crate::event_loop::ResourceId;
@@ -26,6 +27,8 @@ pub type TcpOnReadCallback =
 pub type TcpOnWriteCallback =
     Box<dyn FnOnce(LoopHandle, TcpConnectionHandle, Result<usize>) + 'static>;
 
+pub type TcpOnCloseCallback = Box<dyn FnOnce(LoopHandle) + 'static>;
+
 /// Information about the underlying tcp socket.
 pub struct SocketInfo {
     pub host: SocketAddr,
@@ -46,21 +49,31 @@ pub(crate) struct TcpConnection {
     socket: TcpStream,
     on_connection: Option<TcpOnConnectionCallback>,
     on_read: Option<TcpOnReadCallback>,
+    on_close: Option<TcpOnCloseCallback>,
     write_queue: VecDeque<(Vec<u8>, TcpOnWriteCallback)>,
 }
 
 impl Resource for TcpConnection {
-    #[allow(unused_must_use)]
-    fn close(&mut self) {
+    fn close(&mut self, handle: LoopHandle) {
         // Shutdown the write side of the stream.
-        self.socket.shutdown(Shutdown::Write);
+        self.socket.shutdown(Shutdown::Write).unwrap();
+
+        // Run any user defined close action.
+        if let Some(callback) = self.on_close.take() {
+            callback(handle);
+        }
     }
 }
 
 impl TcpConnection {
     /// Tries to read from a ready TCP socket. Ready means that
     /// the operation won't block the current thread.
-    pub fn read_from_socket(&mut self, handle: LoopHandle, registry: &mut Registry) {
+    pub fn read_from_socket(
+        &mut self,
+        handle: LoopHandle,
+        registry: &mut Registry,
+        close_queue: &mut BasicQueue,
+    ) {
         // Create buffers for reading data.
         let mut data = vec![];
         let mut data_buf = [0; 4096];
@@ -94,10 +107,9 @@ impl TcpConnection {
             Some(on_read) => on_read,
             None if !is_eof => return,
             None => {
-                // Deregister any interest on that socket.
+                // Deregister any interest on the socket.
                 registry.deregister(&mut self.socket).unwrap();
-                // Schedule resource clean-up.
-                // TODO: self.close_queue.push((index, None));
+                close_queue.push(self.id.get());
                 return;
             }
         };

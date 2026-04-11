@@ -29,10 +29,12 @@ pub type ResourceId = DefaultKey;
 /// All objects that are tracked by the event-loop should implement the `Resource` trait.
 pub trait Resource: Downcast + 'static {
     /// Implements any clean up actions.
-    fn close(&mut self) {}
+    fn close(&mut self, _: LoopHandle) {}
 }
 
 impl_downcast!(Resource);
+
+pub(crate) type BasicQueue = Vec<ResourceId>;
 
 enum Request {
     StartTimer(Timer),
@@ -49,6 +51,7 @@ pub struct EventLoop {
     current_time: Instant,
     resources: SlotMap<ResourceId, Box<dyn Resource>>,
     timers: TimersCollection,
+    close_queue: BasicQueue,
     request_queue: mpsc::Receiver<Request>,
     request_queue_empty: Rc<Cell<bool>>,
     request_sender: Rc<mpsc::Sender<Request>>,
@@ -82,6 +85,7 @@ impl EventLoop {
             current_time: Instant::now(),
             resources: SlotMap::new(),
             timers: TimersCollection::new(),
+            close_queue: Vec::new(),
             request_queue,
             request_queue_empty: Rc::new(Cell::new(true)),
             request_sender: Rc::new(request_sender),
