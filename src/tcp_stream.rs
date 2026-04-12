@@ -72,6 +72,11 @@ impl TcpStream {
         }
     }
 
+    /// Adds data to the write queue for writing.
+    pub fn enqueue(&mut self, data: Vec<u8>, callback: TcpOnWriteCallback) {
+        self.write_queue.push_back((data, callback));
+    }
+
     /// Tries to read from a ready TCP socket. Ready means that
     /// the operation won't block the current thread.
     pub fn read_from_socket(

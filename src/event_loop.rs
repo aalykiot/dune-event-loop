@@ -1,5 +1,7 @@
 use crate::tcp_stream::SocketInfo;
 use crate::tcp_stream::TcpEventKind;
+use crate::tcp_stream::TcpOnReadCallback;
+use crate::tcp_stream::TcpOnWriteCallback;
 use crate::tcp_stream::TcpStream;
 use crate::tcp_stream::TcpStreamHandle;
 use crate::thread_pool::ThreadPool;
@@ -46,7 +48,7 @@ pub(crate) type BasicQueue = Vec<ResourceId>;
 enum Request {
     StartTimer(Timer),
     CancelTimer(TimerHandle),
-    TcpStreamInit(TcpStream),
+    InitTcpStream(TcpStream),
 }
 
 #[allow(dead_code)]
@@ -127,7 +129,7 @@ impl EventLoop {
             match request {
                 Request::StartTimer(timer) => self.start_timer(timer),
                 Request::CancelTimer(handle) => self.cancel_timer(handle),
-                Request::TcpStreamInit(stream) => self.init_tcp_stream(stream),
+                Request::InitTcpStream(stream) => self.tcp_stream_init(stream),
             }
         }
         self.request_queue_empty.set(true);
@@ -192,7 +194,7 @@ impl EventLoop {
     }
 
     /// Initializes a new TCP connection.
-    fn init_tcp_stream(&mut self, mut stream: TcpStream) {
+    fn tcp_stream_init(&mut self, mut stream: TcpStream) {
         // When we create a new TCP socket connection we have to make sure
         // it's well connected with the remote host.
         //
@@ -208,6 +210,50 @@ impl EventLoop {
         let resource_id = self.resources.insert(Box::new(stream));
 
         resource_id_slot.set(resource_id);
+    }
+
+    /// Registers interest for writing to a TCP socket.
+    fn tcp_stream_write(
+        &mut self,
+        handle: TcpStreamHandle,
+        data: Vec<u8>,
+        callback: TcpOnWriteCallback,
+    ) {
+        let key = handle.id.get();
+        let tcp_stream = match self.resources.get_mut(key) {
+            Some(resource) => resource.downcast_mut::<TcpStream>().unwrap(),
+            None => return,
+        };
+
+        tcp_stream.enqueue(data, callback);
+
+        let token = Token(tcp_stream.get_resource_id());
+        let interest = Interest::READABLE.add(Interest::WRITABLE);
+
+        self.registry
+            .reregister(&mut tcp_stream.socket, token, interest)
+            .unwrap();
+    }
+
+    ///  Registers interest for reading from a TCP socket.
+    fn tcp_stream_read_start(&mut self, handle: TcpStreamHandle, callback: TcpOnReadCallback) {
+        let key = handle.id.get();
+        let tcp_stream = match self.resources.get_mut(key) {
+            Some(resource) => resource.downcast_mut::<TcpStream>().unwrap(),
+            None => return,
+        };
+
+        let token = Token(tcp_stream.get_resource_id());
+        tcp_stream.on_read = Some(callback);
+
+        let interest = match tcp_stream.write_queue.len() {
+            0 => Interest::READABLE,
+            _ => Interest::READABLE.add(Interest::WRITABLE),
+        };
+
+        self.registry
+            .reregister(&mut tcp_stream.socket, token, interest)
+            .unwrap();
     }
 }
 
@@ -285,7 +331,7 @@ impl LoopHandle {
 
         // Create a stream handle that we will return to the caller.
         let handle = stream.handle(self.clone());
-        let request = Request::TcpStreamInit(stream);
+        let request = Request::InitTcpStream(stream);
 
         self.request_sender.send(request).unwrap();
         self.request_queue_empty.set(false);
