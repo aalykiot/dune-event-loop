@@ -1,11 +1,17 @@
-use crate::tcp_connection::TcpEventKind;
+use crate::tcp_stream::SocketInfo;
+use crate::tcp_stream::TcpEventKind;
+use crate::tcp_stream::TcpStream;
+use crate::tcp_stream::TcpStreamHandle;
 use crate::thread_pool::ThreadPool;
 use crate::timers::Timer;
 use crate::timers::TimerHandle;
 use crate::timers::TimerKind;
 use crate::timers::TimersCollection;
+use anyhow::Result;
 use downcast_rs::impl_downcast;
 use downcast_rs::Downcast;
+use mio::net::TcpStream as MioSocket;
+use mio::Interest;
 use mio::Poll;
 use mio::Registry;
 use mio::Token;
@@ -14,11 +20,12 @@ use slotmap::DefaultKey;
 use slotmap::Key;
 use slotmap::SlotMap;
 use std::cell::Cell;
+use std::collections::VecDeque;
+use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::rc::Rc;
 use std::sync::mpsc;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
@@ -39,6 +46,7 @@ pub(crate) type BasicQueue = Vec<ResourceId>;
 enum Request {
     StartTimer(Timer),
     CancelTimer(TimerHandle),
+    TcpStreamInit(TcpStream),
 }
 
 #[allow(dead_code)]
@@ -119,6 +127,7 @@ impl EventLoop {
             match request {
                 Request::StartTimer(timer) => self.start_timer(timer),
                 Request::CancelTimer(handle) => self.cancel_timer(handle),
+                Request::TcpStreamInit(stream) => self.init_tcp_stream(stream),
             }
         }
         self.request_queue_empty.set(true);
@@ -181,6 +190,25 @@ impl EventLoop {
         // ones are simply ignored.
         self.resources.remove(handle.id.get());
     }
+
+    /// Initializes a new TCP connection.
+    fn init_tcp_stream(&mut self, mut stream: TcpStream) {
+        // When we create a new TCP socket connection we have to make sure
+        // it's well connected with the remote host.
+        //
+        // See https://docs.rs/mio/0.8.4/mio/net/struct.TcpStream.html#notes
+        let token = Token(stream.get_resource_id());
+        let socket = &mut stream.socket;
+
+        self.registry
+            .register(socket, token, Interest::WRITABLE)
+            .unwrap();
+
+        let resource_id_slot = stream.id.clone();
+        let resource_id = self.resources.insert(Box::new(stream));
+
+        resource_id_slot.set(resource_id);
+    }
 }
 
 impl Default for EventLoop {
@@ -227,11 +255,41 @@ impl LoopHandle {
     }
 
     /// Removes a timer from the event-loop.
-    pub fn cancel_timer(&self, handle: TimerHandle) {
+    pub(crate) fn cancel_timer(&self, handle: TimerHandle) {
         // Send a cancel request.
         let request = Request::CancelTimer(handle);
 
         self.request_sender.send(request).unwrap();
         self.request_queue_empty.set(false);
+    }
+
+    /// Creates a new TCP stream and connects to the specified address.
+    pub fn tcp_connect<F>(&self, address: SocketAddr, callback: F) -> Result<TcpStreamHandle>
+    where
+        F: FnOnce(LoopHandle, TcpStreamHandle, Result<SocketInfo>) + 'static,
+    {
+        // Since the resource is not yet scheduled in the event-loop, we create a
+        // null ID. The event-loop will update this value with a real ID later.
+        let id = Rc::new(Cell::new(DefaultKey::null()));
+        let callback = Box::new(callback);
+
+        // Connect to the remote host.
+        let stream = TcpStream {
+            id,
+            socket: MioSocket::connect(address)?,
+            on_connection: Some(callback),
+            on_read: None,
+            on_close: None,
+            write_queue: VecDeque::new(),
+        };
+
+        // Create a stream handle that we will return to the caller.
+        let handle = stream.handle(self.clone());
+        let request = Request::TcpStreamInit(stream);
+
+        self.request_sender.send(request).unwrap();
+        self.request_queue_empty.set(false);
+
+        Ok(handle)
     }
 }

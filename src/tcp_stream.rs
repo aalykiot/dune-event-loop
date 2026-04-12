@@ -4,7 +4,7 @@ use crate::event_loop::Resource;
 use crate::event_loop::ResourceId;
 use anyhow::anyhow;
 use anyhow::Result;
-use mio::net::TcpStream;
+use mio::net::TcpStream as MioSocket;
 use mio::Interest;
 use mio::Registry;
 use mio::Token;
@@ -19,13 +19,11 @@ use std::net::SocketAddr;
 use std::rc::Rc;
 
 pub type TcpOnConnectionCallback =
-    Box<dyn FnOnce(LoopHandle, TcpConnectionHandle, Result<SocketInfo>) + 'static>;
+    Box<dyn FnOnce(LoopHandle, TcpStreamHandle, Result<SocketInfo>) + 'static>;
 
-pub type TcpOnReadCallback =
-    Box<dyn FnMut(LoopHandle, TcpConnectionHandle, Result<Vec<u8>>) + 'static>;
+pub type TcpOnReadCallback = Box<dyn FnMut(LoopHandle, TcpStreamHandle, Result<Vec<u8>>) + 'static>;
 
-pub type TcpOnWriteCallback =
-    Box<dyn FnOnce(LoopHandle, TcpConnectionHandle, Result<usize>) + 'static>;
+pub type TcpOnWriteCallback = Box<dyn FnOnce(LoopHandle, TcpStreamHandle, Result<usize>) + 'static>;
 
 pub type TcpOnCloseCallback = Box<dyn FnOnce(LoopHandle) + 'static>;
 
@@ -44,16 +42,16 @@ pub(crate) enum TcpEventKind {
 }
 
 /// The data required for a tcp connection resource.
-pub(crate) struct TcpConnection {
-    id: Rc<Cell<ResourceId>>,
-    socket: TcpStream,
-    on_connection: Option<TcpOnConnectionCallback>,
-    on_read: Option<TcpOnReadCallback>,
-    on_close: Option<TcpOnCloseCallback>,
-    write_queue: VecDeque<(Vec<u8>, TcpOnWriteCallback)>,
+pub(crate) struct TcpStream {
+    pub id: Rc<Cell<ResourceId>>,
+    pub socket: MioSocket,
+    pub on_connection: Option<TcpOnConnectionCallback>,
+    pub on_read: Option<TcpOnReadCallback>,
+    pub on_close: Option<TcpOnCloseCallback>,
+    pub write_queue: VecDeque<(Vec<u8>, TcpOnWriteCallback)>,
 }
 
-impl Resource for TcpConnection {
+impl Resource for TcpStream {
     fn close(&mut self, handle: LoopHandle) {
         // Shutdown the write side of the stream.
         self.socket.shutdown(Shutdown::Write).unwrap();
@@ -65,7 +63,15 @@ impl Resource for TcpConnection {
     }
 }
 
-impl TcpConnection {
+impl TcpStream {
+    /// Returns a handle to the tcp stream resource.
+    pub fn handle(&self, handle: LoopHandle) -> TcpStreamHandle {
+        TcpStreamHandle {
+            id: self.id.clone(),
+            handle,
+        }
+    }
+
     /// Tries to read from a ready TCP socket. Ready means that
     /// the operation won't block the current thread.
     pub fn read_from_socket(
@@ -114,7 +120,7 @@ impl TcpConnection {
             }
         };
 
-        let tcp_handle = TcpConnectionHandle {
+        let tcp_handle = TcpStreamHandle {
             id: self.id.clone(),
             handle: handle.clone(),
         };
@@ -142,7 +148,7 @@ impl TcpConnection {
     /// the operation won't block the current thread.
     pub fn write_to_socket(&mut self, handle: LoopHandle, registry: &mut Registry) {
         // Create a handle to the resource.
-        let tcp_handle = TcpConnectionHandle {
+        let tcp_handle = TcpStreamHandle {
             id: self.id.clone(),
             handle: handle.clone(),
         };
@@ -227,14 +233,14 @@ impl TcpConnection {
     }
 
     /// Returns the resource id as a usize.
-    fn get_resource_id(&self) -> usize {
+    pub fn get_resource_id(&self) -> usize {
         self.id.get().data().as_ffi() as usize
     }
 }
 
 /// A reference like struct to an active tcp connection.
 #[derive(Debug, Clone)]
-pub struct TcpConnectionHandle {
+pub struct TcpStreamHandle {
     /// A shared pointer to the resource ID of the connection.
     pub(crate) id: Rc<Cell<ResourceId>>,
     /// A handle to the event-loop.
