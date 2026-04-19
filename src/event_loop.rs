@@ -47,9 +47,13 @@ impl_downcast!(Resource);
 pub(crate) type BasicQueue = Vec<ResourceId>;
 
 enum Request {
-    StartTimer(Timer),
-    CancelTimer(TimerHandle),
-    InitTcpStream(TcpStream),
+    TimerStart(Timer),
+    TimerCancel(ResourceId),
+    TcpInit(TcpStream),
+    TcpWrite(ResourceId, Vec<u8>, OnWriteCallback),
+    TcpRead(ResourceId, OnReadCallback),
+    TcpShutdown(ResourceId, OnCloseCallback),
+    TcpClose(ResourceId, OnCloseCallback),
 }
 
 #[allow(dead_code)]
@@ -128,9 +132,13 @@ impl EventLoop {
     fn process_requests(&mut self) {
         while let Ok(request) = self.request_queue.try_recv() {
             match request {
-                Request::StartTimer(timer) => self.start_timer(timer),
-                Request::CancelTimer(handle) => self.cancel_timer(handle),
-                Request::InitTcpStream(stream) => self.tcp_stream_init(stream),
+                Request::TimerStart(timer) => self.start_timer(timer),
+                Request::TimerCancel(handle) => self.cancel_timer(handle),
+                Request::TcpInit(stream) => self.tcp_stream_init(stream),
+                Request::TcpRead(rid, callback) => self.tcp_stream_read_start(rid, callback),
+                Request::TcpWrite(rid, data, cb) => self.tcp_stream_write(rid, data, cb),
+                Request::TcpShutdown(rid, callback) => self.tcp_stream_shutdown(rid, callback),
+                Request::TcpClose(rid, callback) => self.tcp_stream_close(rid, callback),
             }
         }
         self.request_queue_empty.set(true);
@@ -187,11 +195,11 @@ impl EventLoop {
     }
 
     /// Removes a previously scheduled timer.
-    fn cancel_timer(&mut self, handle: TimerHandle) {
+    fn cancel_timer(&mut self, rid: ResourceId) {
         // To achieve O(1) cancellation, we remove the resource but keep the entry
         // in the timer collection. When processing expired timers, canceled
         // ones are simply ignored.
-        self.resources.remove(handle.id.get());
+        self.resources.remove(rid);
     }
 
     /// Initializes a new TCP connection.
@@ -214,14 +222,9 @@ impl EventLoop {
     }
 
     /// Registers interest for writing to a TCP socket.
-    fn tcp_stream_write(
-        &mut self,
-        handle: TcpStreamHandle,
-        data: Vec<u8>,
-        callback: OnWriteCallback,
-    ) {
-        let key = handle.id.get();
-        let tcp_stream = match self.resources.get_mut(key) {
+    fn tcp_stream_write(&mut self, rid: ResourceId, data: Vec<u8>, callback: OnWriteCallback) {
+        // Get the resource from the slotmap.
+        let tcp_stream = match self.resources.get_mut(rid) {
             Some(resource) => resource.downcast_mut::<TcpStream>().unwrap(),
             None => return,
         };
@@ -237,9 +240,9 @@ impl EventLoop {
     }
 
     /// Registers interest for reading from a TCP socket.
-    fn tcp_stream_read_start(&mut self, handle: TcpStreamHandle, callback: OnReadCallback) {
-        let key = handle.id.get();
-        let tcp_stream = match self.resources.get_mut(key) {
+    fn tcp_stream_read_start(&mut self, rid: ResourceId, callback: OnReadCallback) {
+        // Get resource from the slotmap.
+        let tcp_stream = match self.resources.get_mut(rid) {
             Some(resource) => resource.downcast_mut::<TcpStream>().unwrap(),
             None => return,
         };
@@ -258,24 +261,23 @@ impl EventLoop {
     }
 
     /// Schedules a full TCP stream shutdown.
-    fn tcp_stream_close(&mut self, handle: TcpStreamHandle, callback: OnCloseCallback) {
+    fn tcp_stream_close(&mut self, rid: ResourceId, callback: OnCloseCallback) {
         // Get the tcp stream resource.
-        let key = handle.id.get();
-        let tcp_stream = match self.resources.get_mut(key) {
+        let tcp_stream = match self.resources.get_mut(rid) {
             Some(resource) => resource.downcast_mut::<TcpStream>().unwrap(),
             None => return,
         };
 
         tcp_stream.on_close = Some(callback);
-        self.close_queue.push(key);
+        self.close_queue.push(rid);
     }
 
     /// Closes the write side of the TCP stream.
-    fn tcp_stream_shutdown(&mut self, handle: TcpStreamHandle, callback: OnCloseCallback) {
-        let key = handle.id.get();
+    fn tcp_stream_shutdown(&mut self, rid: ResourceId, callback: OnCloseCallback) {
+        // We need to take the handle here due to borrowing constraints.
         let handle = self.handle();
 
-        if let Some(resource) = self.resources.get_mut(key) {
+        if let Some(resource) = self.resources.get_mut(rid) {
             resource.close(handle.clone());
             callback(handle);
         }
@@ -317,7 +319,7 @@ impl LoopHandle {
 
         // Create a timer handle that we will return to the caller.
         let handle = timer.handle(self.clone());
-        let request = Request::StartTimer(timer);
+        let request = Request::TimerStart(timer);
 
         self.request_sender.send(request).unwrap();
         self.request_queue_empty.set(false);
@@ -328,7 +330,7 @@ impl LoopHandle {
     /// Removes a timer from the event-loop.
     pub(crate) fn cancel_timer(&self, handle: TimerHandle) {
         // Send a cancel request.
-        let request = Request::CancelTimer(handle);
+        let request = Request::TimerCancel(handle.id.get());
 
         self.request_sender.send(request).unwrap();
         self.request_queue_empty.set(false);
@@ -356,7 +358,7 @@ impl LoopHandle {
 
         // Create a stream handle that we will return to the caller.
         let handle = stream.handle(self.clone());
-        let request = Request::InitTcpStream(stream);
+        let request = Request::TcpInit(stream);
 
         self.request_sender.send(request).unwrap();
         self.request_queue_empty.set(false);
