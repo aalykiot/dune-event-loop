@@ -73,7 +73,7 @@ impl TcpStream {
         self.write_queue.push_back((data, callback));
     }
 
-    /// Tries to read from a ready TCP socket. Ready means that
+    /// Tries to read from a ready tcp socket. Ready means that
     /// the operation won't block the current thread.
     pub fn read_from_socket(
         &mut self,
@@ -108,7 +108,7 @@ impl TcpStream {
             }
         }
 
-        // NOTE: If a FIN packet received without us listening on the TCP stream, it means that
+        // NOTE: If a FIN packet received without us listening on the tcp stream, it means that
         // the other side closed the connection so we'll schedule the resource for removal.
         let on_read = match self.on_read.as_mut() {
             Some(on_read) => on_read,
@@ -145,7 +145,7 @@ impl TcpStream {
         };
     }
 
-    /// Tries to read from a ready TCP socket. Ready means that
+    /// Tries to read from a ready tcp socket. Ready means that
     /// the operation won't block the current thread.
     pub fn write_to_socket(&mut self, handle: LoopHandle, registry: &mut Registry) {
         // Create a handle to the resource.
@@ -170,7 +170,7 @@ impl TcpStream {
         }
 
         // If the on_connection callback is None it means that in some previous iteration
-        // we made sure the TCP socket is well connected with the remote host.
+        // we made sure the tcp socket is well connected with the remote host.
         if let Some(on_connection) = self.on_connection.take() {
             // Run socket's on_connection callback.
             (on_connection)(
@@ -235,11 +235,54 @@ impl TcpStream {
     }
 }
 
-/// A reference like struct to an active tcp connection.
+/// A reference like struct to an open tcp connection.
 #[derive(Debug, Clone)]
 pub struct TcpStreamHandle {
     /// A shared pointer to the resource ID of the connection.
     pub(crate) id: Rc<Cell<ResourceId>>,
     /// A handle to the event-loop.
     handle: LoopHandle,
+}
+
+impl TcpStreamHandle {
+    /// Writes data to the tcp stream.
+    pub fn write<F>(&self, data: &[u8], callback: F)
+    where
+        F: Fn(TcpStreamHandle, Result<usize>) + 'static,
+    {
+        // Use the event-loop handle to write.
+        self.handle.tcp_write(self.clone(), data, callback);
+    }
+
+    /// Starts reading from a tcp stream.
+    pub fn set_read_callback<F>(&self, callback: F)
+    where
+        F: Fn(TcpStreamHandle, Result<Vec<u8>>) + 'static,
+    {
+        // Use the event-loop handle to set a read callback for the stream.
+        self.handle.tcp_read_start(self.clone(), callback);
+    }
+
+    /// Closes the write side of the TCP stream.
+    pub fn shutdown<F>(&self, callback: F)
+    where
+        F: Fn(LoopHandle) + 'static,
+    {
+        // Use the event-loop handle to shutdown the write side of the stream.
+        self.handle.tcp_shutdown(self.clone(), callback);
+    }
+
+    /// COmpletely closes the tcp stream.
+    pub fn close<F>(&self, callback: F)
+    where
+        F: Fn(LoopHandle) + 'static,
+    {
+        // Use the event-loop handle to close the stream.
+        self.handle.tcp_close(self.clone(), callback);
+    }
+
+    /// Returns a handle to the event-loop.
+    pub fn get_loop(&self) -> LoopHandle {
+        self.handle.clone()
+    }
 }

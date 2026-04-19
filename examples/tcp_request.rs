@@ -1,0 +1,44 @@
+extern crate dune_event_loop;
+
+use anyhow::Result;
+use dune_event_loop::tcp_stream::SocketInfo;
+use dune_event_loop::tcp_stream::TcpStreamHandle;
+use dune_event_loop::EventLoop;
+use dune_event_loop::LoopHandle;
+
+fn main() {
+    let address = "104.21.45.178:80".parse().unwrap();
+    let mut event_loop = EventLoop::default();
+    let handle = event_loop.handle();
+
+    let on_write = |_: TcpStreamHandle, _: Result<usize>| {};
+    let on_close = |_: LoopHandle| println!("Connection closed.");
+
+    let on_read = move |stream: TcpStreamHandle, data: Result<Vec<u8>>| {
+        match data {
+            Ok(data) if data.is_empty() => stream.close(on_close),
+            Ok(data) => println!("{}", String::from_utf8(data).unwrap()),
+            Err(err) => println!("ERROR: {}", err),
+        };
+    };
+
+    const HTTP_REQUEST: &str =
+        "GET / HTTP/1.1\r\nHost: rssweather.com\r\nConnection: close\r\n\r\n";
+
+    let on_connection = move |stream: TcpStreamHandle, socket: Result<SocketInfo>| match socket {
+        Ok(_) => {
+            stream.set_read_callback(on_read);
+            stream.write(HTTP_REQUEST.as_bytes(), on_write);
+        }
+        Err(e) => {
+            eprintln!("{}", e);
+            stream.close(|_: LoopHandle| {});
+        }
+    };
+
+    handle.tcp_connect(address, on_connection).unwrap();
+
+    while event_loop.has_pending_events() {
+        event_loop.tick();
+    }
+}

@@ -133,7 +133,7 @@ impl EventLoop {
         while let Ok(request) = self.request_queue.try_recv() {
             match request {
                 Request::TimerStart(timer) => self.start_timer(timer),
-                Request::TimerCancel(handle) => self.cancel_timer(handle),
+                Request::TimerCancel(rid) => self.cancel_timer(rid),
                 Request::TcpInit(stream) => self.tcp_stream_init(stream),
                 Request::TcpRead(rid, callback) => self.tcp_stream_read_start(rid, callback),
                 Request::TcpWrite(rid, data, cb) => self.tcp_stream_write(rid, data, cb),
@@ -202,9 +202,9 @@ impl EventLoop {
         self.resources.remove(rid);
     }
 
-    /// Initializes a new TCP connection.
+    /// Initializes a new tcp connection.
     fn tcp_stream_init(&mut self, mut stream: TcpStream) {
-        // When we create a new TCP socket connection we have to make sure
+        // When we create a new tcp socket connection we have to make sure
         // it's well connected with the remote host.
         //
         // See https://docs.rs/mio/0.8.4/mio/net/struct.TcpStream.html#notes
@@ -221,7 +221,7 @@ impl EventLoop {
         resource_id_slot.set(resource_id);
     }
 
-    /// Registers interest for writing to a TCP socket.
+    /// Registers interest for writing to a tcp socket.
     fn tcp_stream_write(&mut self, rid: ResourceId, data: Vec<u8>, callback: OnWriteCallback) {
         // Get the resource from the slotmap.
         let tcp_stream = match self.resources.get_mut(rid) {
@@ -239,7 +239,7 @@ impl EventLoop {
             .unwrap();
     }
 
-    /// Registers interest for reading from a TCP socket.
+    /// Registers interest for reading from a tcp socket.
     fn tcp_stream_read_start(&mut self, rid: ResourceId, callback: OnReadCallback) {
         // Get resource from the slotmap.
         let tcp_stream = match self.resources.get_mut(rid) {
@@ -260,7 +260,7 @@ impl EventLoop {
             .unwrap();
     }
 
-    /// Schedules a full TCP stream shutdown.
+    /// Schedules a full tcp stream shutdown.
     fn tcp_stream_close(&mut self, rid: ResourceId, callback: OnCloseCallback) {
         // Get the tcp stream resource.
         let tcp_stream = match self.resources.get_mut(rid) {
@@ -272,7 +272,7 @@ impl EventLoop {
         self.close_queue.push(rid);
     }
 
-    /// Closes the write side of the TCP stream.
+    /// Closes the write side of the tcp stream.
     fn tcp_stream_shutdown(&mut self, rid: ResourceId, callback: OnCloseCallback) {
         // We need to take the handle here due to borrowing constraints.
         let handle = self.handle();
@@ -336,7 +336,7 @@ impl LoopHandle {
         self.request_queue_empty.set(false);
     }
 
-    /// Creates a new TCP stream and connects to the specified address.
+    /// Creates a new tcp stream and connects to the specified address.
     pub fn tcp_connect<F>(&self, address: SocketAddr, callback: F) -> Result<TcpStreamHandle>
     where
         F: Fn(TcpStreamHandle, Result<SocketInfo>) + 'static,
@@ -364,5 +364,53 @@ impl LoopHandle {
         self.request_queue_empty.set(false);
 
         Ok(handle)
+    }
+
+    /// Writes bytes to an open tcp stream.
+    pub(crate) fn tcp_write<F>(&self, handle: TcpStreamHandle, data: &[u8], callback: F)
+    where
+        F: Fn(TcpStreamHandle, Result<usize>) + 'static,
+    {
+        let rid = handle.id.get();
+        let request = Request::TcpWrite(rid, data.to_vec(), Box::new(callback));
+
+        self.request_sender.send(request).unwrap();
+        self.request_queue_empty.set(false);
+    }
+
+    /// Starts reading from an open tcp stream.
+    pub(crate) fn tcp_read_start<F>(&self, handle: TcpStreamHandle, callback: F)
+    where
+        F: Fn(TcpStreamHandle, Result<Vec<u8>>) + 'static,
+    {
+        let rid = handle.id.get();
+        let request = Request::TcpRead(rid, Box::new(callback));
+
+        self.request_sender.send(request).unwrap();
+        self.request_queue_empty.set(false);
+    }
+
+    /// Closes the write side of the tcp stream.
+    pub(crate) fn tcp_shutdown<F>(&self, handle: TcpStreamHandle, callback: F)
+    where
+        F: Fn(LoopHandle) + 'static,
+    {
+        let rid = handle.id.get();
+        let request = Request::TcpShutdown(rid, Box::new(callback));
+
+        self.request_sender.send(request).unwrap();
+        self.request_queue_empty.set(false);
+    }
+
+    /// Completely shutdowns the tcp stream.
+    pub(crate) fn tcp_close<F>(&self, handle: TcpStreamHandle, callback: F)
+    where
+        F: Fn(LoopHandle) + 'static,
+    {
+        let rid = handle.id.get();
+        let request = Request::TcpClose(rid, Box::new(callback));
+
+        self.request_sender.send(request).unwrap();
+        self.request_queue_empty.set(false);
     }
 }
