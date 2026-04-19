@@ -1,7 +1,7 @@
+use crate::tcp_stream::OnReadCallback;
+use crate::tcp_stream::OnWriteCallback;
 use crate::tcp_stream::SocketInfo;
 use crate::tcp_stream::TcpEventKind;
-use crate::tcp_stream::TcpOnReadCallback;
-use crate::tcp_stream::TcpOnWriteCallback;
 use crate::tcp_stream::TcpStream;
 use crate::tcp_stream::TcpStreamHandle;
 use crate::thread_pool::ThreadPool;
@@ -217,7 +217,7 @@ impl EventLoop {
         &mut self,
         handle: TcpStreamHandle,
         data: Vec<u8>,
-        callback: TcpOnWriteCallback,
+        callback: OnWriteCallback,
     ) {
         let key = handle.id.get();
         let tcp_stream = match self.resources.get_mut(key) {
@@ -236,7 +236,7 @@ impl EventLoop {
     }
 
     ///  Registers interest for reading from a TCP socket.
-    fn tcp_stream_read_start(&mut self, handle: TcpStreamHandle, callback: TcpOnReadCallback) {
+    fn tcp_stream_read_start(&mut self, handle: TcpStreamHandle, callback: OnReadCallback) {
         let key = handle.id.get();
         let tcp_stream = match self.resources.get_mut(key) {
             Some(resource) => resource.downcast_mut::<TcpStream>().unwrap(),
@@ -312,7 +312,7 @@ impl LoopHandle {
     /// Creates a new TCP stream and connects to the specified address.
     pub fn tcp_connect<F>(&self, address: SocketAddr, callback: F) -> Result<TcpStreamHandle>
     where
-        F: FnOnce(LoopHandle, TcpStreamHandle, Result<SocketInfo>) + 'static,
+        F: Fn(TcpStreamHandle, Result<SocketInfo>) + 'static,
     {
         // Since the resource is not yet scheduled in the event-loop, we create a
         // null ID. The event-loop will update this value with a real ID later.

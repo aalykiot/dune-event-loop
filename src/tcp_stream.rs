@@ -18,14 +18,10 @@ use std::net::Shutdown;
 use std::net::SocketAddr;
 use std::rc::Rc;
 
-pub type TcpOnConnectionCallback =
-    Box<dyn FnOnce(LoopHandle, TcpStreamHandle, Result<SocketInfo>) + 'static>;
-
-pub type TcpOnReadCallback = Box<dyn FnMut(LoopHandle, TcpStreamHandle, Result<Vec<u8>>) + 'static>;
-
-pub type TcpOnWriteCallback = Box<dyn FnOnce(LoopHandle, TcpStreamHandle, Result<usize>) + 'static>;
-
-pub type TcpOnCloseCallback = Box<dyn FnOnce(LoopHandle) + 'static>;
+pub type OnConnectionCallback = Box<dyn Fn(TcpStreamHandle, Result<SocketInfo>) + 'static>;
+pub type OnReadCallback = Box<dyn Fn(TcpStreamHandle, Result<Vec<u8>>) + 'static>;
+pub type OnWriteCallback = Box<dyn Fn(TcpStreamHandle, Result<usize>) + 'static>;
+pub type OnCloseCallback = Box<dyn Fn(LoopHandle) + 'static>;
 
 /// Information about the underlying tcp socket.
 pub struct SocketInfo {
@@ -45,10 +41,10 @@ pub(crate) enum TcpEventKind {
 pub(crate) struct TcpStream {
     pub id: Rc<Cell<ResourceId>>,
     pub socket: MioSocket,
-    pub on_connection: Option<TcpOnConnectionCallback>,
-    pub on_read: Option<TcpOnReadCallback>,
-    pub on_close: Option<TcpOnCloseCallback>,
-    pub write_queue: VecDeque<(Vec<u8>, TcpOnWriteCallback)>,
+    pub on_connection: Option<OnConnectionCallback>,
+    pub on_read: Option<OnReadCallback>,
+    pub on_close: Option<OnCloseCallback>,
+    pub write_queue: VecDeque<(Vec<u8>, OnWriteCallback)>,
 }
 
 impl Resource for TcpStream {
@@ -73,7 +69,7 @@ impl TcpStream {
     }
 
     /// Adds data to the write queue for writing.
-    pub fn enqueue(&mut self, data: Vec<u8>, callback: TcpOnWriteCallback) {
+    pub fn enqueue(&mut self, data: Vec<u8>, callback: OnWriteCallback) {
         self.write_queue.push_back((data, callback));
     }
 
@@ -132,19 +128,19 @@ impl TcpStream {
 
         // Check if we had any errors while reading.
         if let Some(e) = read_error {
-            (on_read)(handle, tcp_handle, Err(e.into()));
+            (on_read)(tcp_handle, Err(e.into()));
             return;
         }
 
         match data.len() {
             // FIN packet.
-            0 => (on_read)(handle, tcp_handle, Ok(data)),
+            0 => (on_read)(tcp_handle, Ok(data)),
             // We read some bytes.
-            _ if !is_eof => (on_read)(handle, tcp_handle, Ok(data)),
+            _ if !is_eof => (on_read)(tcp_handle, Ok(data)),
             // FIN packet is included to the bytes we read.
             _ => {
-                (on_read)(handle.clone(), tcp_handle.clone(), Ok(data));
-                (on_read)(handle, tcp_handle, Ok(vec![]));
+                (on_read)(tcp_handle.clone(), Ok(data));
+                (on_read)(tcp_handle, Ok(vec![]));
             }
         };
     }
@@ -163,12 +159,12 @@ impl TcpStream {
             // If `on_connection` is available it means the socket error happened
             // while trying to connect.
             if let Some(on_connection) = self.on_connection.take() {
-                (on_connection)(handle, tcp_handle, Err(e.into()));
+                (on_connection)(tcp_handle, Err(e.into()));
                 return;
             }
             // Otherwise the error happened while writing.
             if let Some((_, on_write)) = self.write_queue.pop_front() {
-                (on_write)(handle, tcp_handle, Err(e.into()));
+                (on_write)(tcp_handle, Err(e.into()));
                 return;
             }
         }
@@ -178,7 +174,6 @@ impl TcpStream {
         if let Some(on_connection) = self.on_connection.take() {
             // Run socket's on_connection callback.
             (on_connection)(
-                handle.clone(),
                 tcp_handle.clone(),
                 Ok(SocketInfo {
                     host: self.socket.local_addr().unwrap(),
@@ -194,11 +189,8 @@ impl TcpStream {
         }
 
         loop {
-            // Due to loop ownership issues we need to clone the handle.
-            let handle = handle.clone();
-            let tcp_handle = tcp_handle.clone();
-
             // Connection is okay, let's write some bytes.
+            let tcp_handle = tcp_handle.clone();
             let (data, on_write) = match self.write_queue.pop_front() {
                 Some(value) => value,
                 None => break,
@@ -210,10 +202,10 @@ impl TcpStream {
                 // `io::Write::write_all` does).
                 Ok(n) if n < data.len() => {
                     let err_message = io::ErrorKind::WriteZero.to_string();
-                    (on_write)(handle, tcp_handle, Err(anyhow!("{}", err_message)));
+                    (on_write)(tcp_handle, Err(anyhow!("{}", err_message)));
                 }
                 // All bytes were written to socket.
-                Ok(n) => (on_write)(handle, tcp_handle, Ok(n)),
+                Ok(n) => (on_write)(tcp_handle, Ok(n)),
                 // Would block "errors" are the OS's way of saying that the
                 // connection is not actually ready to perform this I/O operation.
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => {
@@ -224,7 +216,7 @@ impl TcpStream {
                 }
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                 // An important error seems to have accrued.
-                Err(e) => (on_write)(handle, tcp_handle, Err(e.into())),
+                Err(e) => (on_write)(tcp_handle, Err(e.into())),
             };
         }
 

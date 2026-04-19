@@ -52,8 +52,6 @@ pub(crate) struct Timer {
     pub kind: TimerKind,
 }
 
-impl Resource for Timer {}
-
 impl Timer {
     /// Runs the callback of the timer.
     pub fn run_callback(&mut self, handle: LoopHandle) {
@@ -68,6 +66,8 @@ impl Timer {
         }
     }
 }
+
+impl Resource for Timer {}
 
 /// A reference like struct to an active timer.
 #[derive(Debug, Clone)]
