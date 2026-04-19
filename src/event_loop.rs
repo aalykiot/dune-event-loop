@@ -1,3 +1,4 @@
+use crate::tcp_stream::OnCloseCallback;
 use crate::tcp_stream::OnReadCallback;
 use crate::tcp_stream::OnWriteCallback;
 use crate::tcp_stream::SocketInfo;
@@ -235,7 +236,7 @@ impl EventLoop {
             .unwrap();
     }
 
-    ///  Registers interest for reading from a TCP socket.
+    /// Registers interest for reading from a TCP socket.
     fn tcp_stream_read_start(&mut self, handle: TcpStreamHandle, callback: OnReadCallback) {
         let key = handle.id.get();
         let tcp_stream = match self.resources.get_mut(key) {
@@ -254,6 +255,30 @@ impl EventLoop {
         self.registry
             .reregister(&mut tcp_stream.socket, token, interest)
             .unwrap();
+    }
+
+    /// Schedules a full TCP stream shutdown.
+    fn tcp_stream_close(&mut self, handle: TcpStreamHandle, callback: OnCloseCallback) {
+        // Get the tcp stream resource.
+        let key = handle.id.get();
+        let tcp_stream = match self.resources.get_mut(key) {
+            Some(resource) => resource.downcast_mut::<TcpStream>().unwrap(),
+            None => return,
+        };
+
+        tcp_stream.on_close = Some(callback);
+        self.close_queue.push(key);
+    }
+
+    /// Closes the write side of the TCP stream.
+    fn tcp_stream_shutdown(&mut self, handle: TcpStreamHandle, callback: OnCloseCallback) {
+        let key = handle.id.get();
+        let handle = self.handle();
+
+        if let Some(resource) = self.resources.get_mut(key) {
+            resource.close(handle.clone());
+            callback(handle);
+        }
     }
 }
 
