@@ -82,7 +82,6 @@ impl TimerHandle {
     /// Cancels the scheduled timer.
     pub fn cancel(self) {
         // Consume self and call the internal cancle_timer method.
-        let handle = self.handle.clone();
-        handle.cancel_timer(self);
+        self.handle.cancel_timer(self.id.get());
     }
 }

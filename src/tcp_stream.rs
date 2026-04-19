@@ -251,7 +251,7 @@ impl TcpStreamHandle {
         F: Fn(TcpStreamHandle, Result<usize>) + 'static,
     {
         // Use the event-loop handle to write.
-        self.handle.tcp_write(self.clone(), data, callback);
+        self.handle.tcp_write(self.id.get(), data, callback);
     }
 
     /// Starts reading from a tcp stream.
@@ -260,7 +260,7 @@ impl TcpStreamHandle {
         F: Fn(TcpStreamHandle, Result<Vec<u8>>) + 'static,
     {
         // Use the event-loop handle to set a read callback for the stream.
-        self.handle.tcp_read_start(self.clone(), callback);
+        self.handle.tcp_read_start(self.id.get(), callback);
     }
 
     /// Closes the write side of the TCP stream.
@@ -269,7 +269,7 @@ impl TcpStreamHandle {
         F: Fn(LoopHandle) + 'static,
     {
         // Use the event-loop handle to shutdown the write side of the stream.
-        self.handle.tcp_shutdown(self.clone(), callback);
+        self.handle.tcp_shutdown(self.id.get(), callback);
     }
 
     /// COmpletely closes the tcp stream.
@@ -278,7 +278,7 @@ impl TcpStreamHandle {
         F: Fn(LoopHandle) + 'static,
     {
         // Use the event-loop handle to close the stream.
-        self.handle.tcp_close(self.clone(), callback);
+        self.handle.tcp_close(self.id.get(), callback);
     }
 
     /// Returns a handle to the event-loop.

@@ -328,9 +328,9 @@ impl LoopHandle {
     }
 
     /// Removes a timer from the event-loop.
-    pub(crate) fn cancel_timer(&self, handle: TimerHandle) {
+    pub(crate) fn cancel_timer(&self, id: ResourceId) {
         // Send a cancel request.
-        let request = Request::TimerCancel(handle.id.get());
+        let request = Request::TimerCancel(id);
 
         self.request_sender.send(request).unwrap();
         self.request_queue_empty.set(false);
@@ -367,48 +367,44 @@ impl LoopHandle {
     }
 
     /// Writes bytes to an open tcp stream.
-    pub(crate) fn tcp_write<F>(&self, handle: TcpStreamHandle, data: &[u8], callback: F)
+    pub(crate) fn tcp_write<F>(&self, id: ResourceId, data: &[u8], callback: F)
     where
         F: Fn(TcpStreamHandle, Result<usize>) + 'static,
     {
-        let rid = handle.id.get();
-        let request = Request::TcpWrite(rid, data.to_vec(), Box::new(callback));
+        let request = Request::TcpWrite(id, data.to_vec(), Box::new(callback));
 
         self.request_sender.send(request).unwrap();
         self.request_queue_empty.set(false);
     }
 
     /// Starts reading from an open tcp stream.
-    pub(crate) fn tcp_read_start<F>(&self, handle: TcpStreamHandle, callback: F)
+    pub(crate) fn tcp_read_start<F>(&self, id: ResourceId, callback: F)
     where
         F: Fn(TcpStreamHandle, Result<Vec<u8>>) + 'static,
     {
-        let rid = handle.id.get();
-        let request = Request::TcpRead(rid, Box::new(callback));
+        let request = Request::TcpRead(id, Box::new(callback));
 
         self.request_sender.send(request).unwrap();
         self.request_queue_empty.set(false);
     }
 
     /// Closes the write side of the tcp stream.
-    pub(crate) fn tcp_shutdown<F>(&self, handle: TcpStreamHandle, callback: F)
+    pub(crate) fn tcp_shutdown<F>(&self, id: ResourceId, callback: F)
     where
         F: Fn(LoopHandle) + 'static,
     {
-        let rid = handle.id.get();
-        let request = Request::TcpShutdown(rid, Box::new(callback));
+        let request = Request::TcpShutdown(id, Box::new(callback));
 
         self.request_sender.send(request).unwrap();
         self.request_queue_empty.set(false);
     }
 
     /// Completely shutdowns the tcp stream.
-    pub(crate) fn tcp_close<F>(&self, handle: TcpStreamHandle, callback: F)
+    pub(crate) fn tcp_close<F>(&self, id: ResourceId, callback: F)
     where
         F: Fn(LoopHandle) + 'static,
     {
-        let rid = handle.id.get();
-        let request = Request::TcpClose(rid, Box::new(callback));
+        let request = Request::TcpClose(id, Box::new(callback));
 
         self.request_sender.send(request).unwrap();
         self.request_queue_empty.set(false);
