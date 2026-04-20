@@ -28,7 +28,7 @@ fn main() {
     let on_connection = move |stream: TcpStreamHandle, socket: Result<SocketInfo>| match socket {
         Ok(_) => {
             stream.set_read_callback(on_read);
-            stream.write(HTTP_REQUEST.as_bytes(), on_write);
+            stream.write(HTTP_REQUEST.as_bytes().to_vec(), on_write);
         }
         Err(e) => {
             eprintln!("{}", e);

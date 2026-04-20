@@ -367,11 +367,11 @@ impl LoopHandle {
     }
 
     /// Writes bytes to an open tcp stream.
-    pub(crate) fn tcp_write<F>(&self, id: ResourceId, data: &[u8], callback: F)
+    pub(crate) fn tcp_write<F>(&self, id: ResourceId, data: Vec<u8>, callback: F)
     where
         F: Fn(TcpStreamHandle, Result<usize>) + 'static,
     {
-        let request = Request::TcpWrite(id, data.to_vec(), Box::new(callback));
+        let request = Request::TcpWrite(id, data, Box::new(callback));
 
         self.request_sender.send(request).unwrap();
         self.request_queue_empty.set(false);

@@ -246,7 +246,7 @@ pub struct TcpStreamHandle {
 
 impl TcpStreamHandle {
     /// Writes data to the tcp stream.
-    pub fn write<F>(&self, data: &[u8], callback: F)
+    pub fn write<F>(&self, data: Vec<u8>, callback: F)
     where
         F: Fn(TcpStreamHandle, Result<usize>) + 'static,
     {
