@@ -24,12 +24,14 @@ pub type OnWriteCallback = Box<dyn Fn(TcpStreamHandle, Result<usize>) + 'static>
 pub type OnCloseCallback = Box<dyn Fn(LoopHandle) + 'static>;
 
 /// Information about the underlying tcp socket.
+#[derive(Debug)]
 pub struct SocketInfo {
     pub host: SocketAddr,
     pub remote: SocketAddr,
 }
 
 /// Indicates the kind of readiness in the socket.
+#[derive(Debug)]
 pub(crate) enum TcpEventKind {
     /// Socket is ready for reading.
     Read(Token),

@@ -216,7 +216,7 @@ impl EventLoop {
             let event_type = match (readable, writable) {
                 (true, _) => TcpEventKind::Read(token),
                 (false, true) => TcpEventKind::Write(token),
-                (false, false) => continue,
+                _ => continue,
             };
 
             self.event_sender.send(Event::Network(event_type)).unwrap();
@@ -226,6 +226,10 @@ impl EventLoop {
             match event {
                 Event::Network(event) => self.process_network_event(event),
             }
+
+            // Since each event might schedule additional I/O we need to process
+            // the requests queue in every iteration.
+            self.process_requests();
         }
     }
 
