@@ -272,7 +272,7 @@ impl TcpStreamHandle {
         self.handle.tcp_shutdown(self.id.get(), callback);
     }
 
-    /// COmpletely closes the tcp stream.
+    /// Completely closes the tcp stream.
     pub fn close<F>(&self, callback: F)
     where
         F: Fn(LoopHandle) + 'static,

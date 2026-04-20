@@ -132,8 +132,8 @@ impl EventLoop {
     fn process_requests(&mut self) {
         while let Ok(request) = self.request_queue.try_recv() {
             match request {
-                Request::TimerStart(timer) => self.start_timer(timer),
-                Request::TimerCancel(rid) => self.cancel_timer(rid),
+                Request::TimerStart(timer) => self.timer_start(timer),
+                Request::TimerCancel(rid) => self.timer_cancel(rid),
                 Request::TcpInit(stream) => self.tcp_stream_init(stream),
                 Request::TcpRead(rid, callback) => self.tcp_stream_read_start(rid, callback),
                 Request::TcpWrite(rid, data, cb) => self.tcp_stream_write(rid, data, cb),
@@ -181,7 +181,7 @@ impl EventLoop {
     }
 
     /// Schedules a new timer in the event-loop.
-    fn start_timer(&mut self, timer: Timer) {
+    fn timer_start(&mut self, timer: Timer) {
         // First insert the new timer into the resources map, then set its
         // resource ID to the value returned by the insertion operation.
         let expires_at = self.current_time + timer.delay;
@@ -195,7 +195,7 @@ impl EventLoop {
     }
 
     /// Removes a previously scheduled timer.
-    fn cancel_timer(&mut self, rid: ResourceId) {
+    fn timer_cancel(&mut self, rid: ResourceId) {
         // To achieve O(1) cancellation, we remove the resource but keep the entry
         // in the timer collection. When processing expired timers, canceled
         // ones are simply ignored.
