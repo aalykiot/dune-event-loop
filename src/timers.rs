@@ -34,6 +34,11 @@ impl TimersCollection {
 
         expired.into_iter().flat_map(|(_, t)| t).collect()
     }
+
+    /// Returns the next timer to expire in the queue.
+    pub fn next(&self) -> Option<(&Instant, &Vec<ResourceId>)> {
+        self.tree.iter().next()
+    }
 }
 
 pub type TimerCallback = Box<dyn FnMut(LoopHandle)>;

@@ -32,9 +32,9 @@ pub struct SocketInfo {
 /// Indicates the kind of readiness in the socket.
 pub(crate) enum TcpEventKind {
     /// Socket is ready for reading.
-    Read(ResourceId),
+    Read(Token),
     /// Socket is ready for writing.
-    Write(ResourceId),
+    Write(Token),
 }
 
 /// The data required for a tcp connection resource.

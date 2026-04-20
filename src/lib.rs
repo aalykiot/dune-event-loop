@@ -5,3 +5,4 @@ pub mod timers;
 
 pub use event_loop::EventLoop;
 pub use event_loop::LoopHandle;
+pub use event_loop::RunMode;

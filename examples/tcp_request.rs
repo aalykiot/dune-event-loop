@@ -5,6 +5,7 @@ use dune_event_loop::tcp_stream::SocketInfo;
 use dune_event_loop::tcp_stream::TcpStreamHandle;
 use dune_event_loop::EventLoop;
 use dune_event_loop::LoopHandle;
+use dune_event_loop::RunMode;
 
 fn main() {
     let address = "104.21.45.178:80".parse().unwrap();
@@ -37,8 +38,5 @@ fn main() {
     };
 
     handle.tcp_connect(address, on_connection).unwrap();
-
-    while event_loop.has_pending_events() {
-        event_loop.tick();
-    }
+    event_loop.run(RunMode::Default);
 }

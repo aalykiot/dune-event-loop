@@ -14,6 +14,7 @@ use anyhow::Result;
 use downcast_rs::impl_downcast;
 use downcast_rs::Downcast;
 use mio::net::TcpStream as MioSocket;
+use mio::Events;
 use mio::Interest;
 use mio::Poll;
 use mio::Registry;
@@ -21,9 +22,11 @@ use mio::Token;
 use mio::Waker;
 use slotmap::DefaultKey;
 use slotmap::Key;
+use slotmap::KeyData;
 use slotmap::SlotMap;
 use std::cell::Cell;
 use std::collections::VecDeque;
+use std::io;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::rc::Rc;
@@ -62,10 +65,21 @@ enum Event {
     Network(TcpEventKind),
 }
 
+#[derive(Debug)]
+pub enum RunMode {
+    /// Runs the event loop until there are no resources.
+    Default,
+    /// Polls for I/O events once.
+    Once,
+    /// Does not block if there are no pending events.
+    NoWait,
+}
+
 pub struct EventLoop {
     current_time: Instant,
     resources: SlotMap<ResourceId, Box<dyn Resource>>,
     timers: TimersCollection,
+    check_queue: BasicQueue,
     close_queue: BasicQueue,
     request_queue: mpsc::Receiver<Request>,
     request_queue_empty: Rc<Cell<bool>>,
@@ -100,6 +114,7 @@ impl EventLoop {
             current_time: Instant::now(),
             resources: SlotMap::new(),
             timers: TimersCollection::new(),
+            check_queue: Vec::new(),
             close_queue: Vec::new(),
             request_queue,
             request_queue_empty: Rc::new(Cell::new(true)),
@@ -113,47 +128,42 @@ impl EventLoop {
         }
     }
 
-    /// Returns a new handle to the event-loop.
-    pub fn handle(&self) -> LoopHandle {
-        LoopHandle {
-            request_sender: self.request_sender.clone(),
-            request_queue_empty: self.request_queue_empty.clone(),
+    /// Runs the even-loop by providing a run mode.
+    pub fn run(&mut self, mode: RunMode) {
+        loop {
+            self.current_time = Instant::now();
+            self.process_requests();
+            self.run_timers();
+
+            // Based on the run_mode and what resources the event-loop is currently
+            // running, we will calculate the timout of the poll phase.
+            let timeout = self.poll_timeout(&mode);
+            self.run_poll(timeout);
+
+            // Check if we need to exit, or continue the loop.
+            match mode {
+                RunMode::Once | RunMode::NoWait => break,
+                RunMode::Default if !self.has_pending_events() => break,
+                RunMode::Default => {}
+            };
         }
     }
 
-    /// Returns if there is pending work still ongoing.
-    pub fn has_pending_events(&self) -> bool {
-        !self.resources.is_empty()
-            || !self.request_queue_empty.get()
-            || self.thread_pool.pending_count() != 0
-    }
-
-    /// Drains the request_queue to schedule new workload.
-    fn process_requests(&mut self) {
-        while let Ok(request) = self.request_queue.try_recv() {
-            match request {
-                Request::TimerStart(timer) => self.timer_start(timer),
-                Request::TimerCancel(rid) => self.timer_cancel(rid),
-                Request::TcpInit(stream) => self.tcp_stream_init(stream),
-                Request::TcpRead(rid, callback) => self.tcp_stream_read_start(rid, callback),
-                Request::TcpWrite(rid, data, cb) => self.tcp_stream_write(rid, data, cb),
-                Request::TcpShutdown(rid, callback) => self.tcp_stream_shutdown(rid, callback),
-                Request::TcpClose(rid, callback) => self.tcp_stream_close(rid, callback),
+    /// Calculates the waiting time the poll phase should block for events.
+    fn poll_timeout(&self, mode: &RunMode) -> Option<Duration> {
+        // TODO: Describe how the calculation works..
+        match mode {
+            RunMode::NoWait => Some(Duration::ZERO),
+            _ if !self.has_pending_events() => Some(Duration::ZERO),
+            _ => {
+                let refs = self.check_queue.len() + self.check_queue.len();
+                match self.timers.next() {
+                    _ if refs > 0 => Some(Duration::ZERO),
+                    Some((t, _)) => Some(*t - self.current_time),
+                    None => None,
+                }
             }
         }
-        self.request_queue_empty.set(true);
-    }
-
-    /// Updates the event-loop's current time of now.
-    fn update_current_time(&mut self) {
-        self.current_time = Instant::now();
-    }
-
-    /// Performs a single tick of the event-loop.
-    pub fn tick(&mut self) {
-        self.update_current_time();
-        self.process_requests();
-        self.run_timers();
     }
 
     /// Runs all expired timers.
@@ -176,6 +186,91 @@ impl EventLoop {
                 self.timers.insert(expires_at, id);
             } else {
                 self.resources.remove(id);
+            }
+        }
+    }
+
+    /// Polls for new I/O events (async-tasks, networking, etc).
+    fn run_poll(&mut self, timeout: Option<Duration>) {
+        // Buffer to hold ready events.
+        let mut events = Events::with_capacity(1024);
+
+        // Poll for new network events (this will block the thread).
+        if let Err(e) = self.poll.poll(&mut events, timeout) {
+            match e.kind() {
+                io::ErrorKind::Interrupted => return,
+                _ => panic!("{}", e),
+            };
+        }
+
+        for event in &events {
+            // Note: Token(0) is a special token signaling that someone woke us up.
+            if event.token() == Token(0) {
+                continue;
+            }
+
+            let token = event.token();
+            let readable = event.is_readable() || event.is_read_closed();
+            let writable = event.is_writable();
+
+            let event_type = match (readable, writable) {
+                (true, _) => TcpEventKind::Read(token),
+                (false, true) => TcpEventKind::Write(token),
+                (false, false) => continue,
+            };
+
+            self.event_sender.send(Event::Network(event_type)).unwrap();
+        }
+
+        while let Ok(event) = self.event_queue.try_recv() {
+            match event {
+                Event::Network(event) => self.process_network_event(event),
+            }
+        }
+    }
+
+    /// Drains the request_queue to schedule new workload.
+    fn process_requests(&mut self) {
+        while let Ok(request) = self.request_queue.try_recv() {
+            match request {
+                Request::TimerStart(timer) => self.timer_start(timer),
+                Request::TimerCancel(rid) => self.timer_cancel(rid),
+                Request::TcpInit(stream) => self.tcp_stream_init(stream),
+                Request::TcpRead(rid, callback) => self.tcp_stream_read_start(rid, callback),
+                Request::TcpWrite(rid, data, cb) => self.tcp_stream_write(rid, data, cb),
+                Request::TcpShutdown(rid, callback) => self.tcp_stream_shutdown(rid, callback),
+                Request::TcpClose(rid, callback) => self.tcp_stream_close(rid, callback),
+            }
+        }
+        self.request_queue_empty.set(true);
+    }
+
+    // Processes any ready network events from MIO.
+    fn process_network_event(&mut self, event: TcpEventKind) {
+        // Due to borrowing  constraints down the line, we need to
+        // aqquire a loop handle at this point.
+        let handle = self.handle();
+
+        match event {
+            TcpEventKind::Read(token) => {
+                // We need to get the resource ID from the MIO token.
+                let id = DefaultKey::from(KeyData::from_ffi(token.0 as u64));
+                let stream = match self.resources.get_mut(id) {
+                    Some(resource) => resource.downcast_mut::<TcpStream>().unwrap(),
+                    None => return,
+                };
+
+                stream.write_to_socket(handle, &mut self.registry);
+            }
+            TcpEventKind::Write(token) => {
+                // We need to get the resource ID from the MIO token.
+                let id = DefaultKey::from(KeyData::from_ffi(token.0 as u64));
+                let stream = match self.resources.get_mut(id) {
+                    Some(resource) => resource.downcast_mut::<TcpStream>().unwrap(),
+                    None => return,
+                };
+
+                stream.read_from_socket(handle, &mut self.registry, &mut self.close_queue);
             }
         }
     }
@@ -280,6 +375,21 @@ impl EventLoop {
         if let Some(resource) = self.resources.get_mut(rid) {
             resource.close(handle.clone());
             callback(handle);
+        }
+    }
+
+    /// Returns if there is pending work still ongoing.
+    fn has_pending_events(&self) -> bool {
+        !self.resources.is_empty()
+            || !self.request_queue_empty.get()
+            || self.thread_pool.pending_count() != 0
+    }
+
+    /// Returns a new handle to the event-loop.
+    pub fn handle(&self) -> LoopHandle {
+        LoopHandle {
+            request_sender: self.request_sender.clone(),
+            request_queue_empty: self.request_queue_empty.clone(),
         }
     }
 }

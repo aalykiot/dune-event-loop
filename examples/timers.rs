@@ -3,6 +3,7 @@ extern crate dune_event_loop;
 use dune_event_loop::timers::TimerKind::Timeout;
 use dune_event_loop::EventLoop;
 use dune_event_loop::LoopHandle;
+use dune_event_loop::RunMode;
 use std::time::Duration;
 
 fn main() {
@@ -13,7 +14,5 @@ fn main() {
         println!("Hello, world!");
     });
 
-    while event_loop.has_pending_events() {
-        event_loop.tick();
-    }
+    event_loop.run(RunMode::Default);
 }
