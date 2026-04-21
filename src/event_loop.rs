@@ -1,5 +1,6 @@
 use crate::resource::ResourceId;
 use crate::resource::ResourceMap;
+use crate::tcp_listener::TcpListener;
 use crate::tcp_stream::OnCloseCallback;
 use crate::tcp_stream::OnReadCallback;
 use crate::tcp_stream::OnWriteCallback;
@@ -261,11 +262,37 @@ impl EventLoop {
 
         match event {
             TcpEventKind::Read(token) => {
-                // We need to get the resource ID from the MIO token.
+                // MIO doesn't have a way to tell us if the event is for a socket or a listener
+                // so we'll try to cast the resource into a tcp stream first. If that fails
+                // will try to cast the resource into a tcp listener.
                 let id = DefaultKey::from(KeyData::from_ffi(token.0 as u64));
-                let stream = self.resources.get_mut_as::<TcpStream>(id).unwrap();
 
-                stream.read_from_socket(handle, &mut self.registry, &mut self.close_queue);
+                if let Some(stream) = self.resources.get_mut_as::<TcpStream>(id) {
+                    stream.read_from_socket(handle, &mut self.registry, &mut self.close_queue);
+                    return;
+                }
+
+                let listener = self.resources.get_mut_as::<TcpListener>(id).unwrap();
+                let clients = listener.accept(handle);
+
+                for stream in clients {
+                    // For every new connection, add the stream to the resources so we can
+                    // attach an actual ID and declare interest in the registry.
+                    let id_slot = stream.id.clone();
+                    let id = self.resources.insert(Box::new(stream));
+
+                    id_slot.set(id);
+
+                    // We need to get the stream from the resources to satisfy
+                    // rust's ownership and borrowing rules.
+                    let stream = self.resources.get_mut_as::<TcpStream>(id).unwrap();
+                    let token = Token(stream.get_id());
+                    let socket = &mut stream.socket;
+
+                    self.registry
+                        .register(socket, token, Interest::READABLE)
+                        .unwrap();
+                }
             }
             TcpEventKind::Write(token) => {
                 // We need to get the resource ID from the MIO token.

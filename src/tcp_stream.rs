@@ -130,7 +130,7 @@ impl TcpStream {
 
         // Check if we had any errors while reading.
         if let Some(e) = read_error {
-            (on_read)(tcp_handle, Err(e.into()));
+            on_read(tcp_handle, Err(e.into()));
             return;
         }
 
@@ -175,7 +175,7 @@ impl TcpStream {
         // we made sure the tcp socket is well connected with the remote host.
         if let Some(on_connection) = self.on_connection.take() {
             // Run socket's on_connection callback.
-            (on_connection)(
+            on_connection(
                 tcp_handle.clone(),
                 Ok(SocketInfo {
                     host: self.socket.local_addr().unwrap(),
@@ -204,7 +204,7 @@ impl TcpStream {
                 // `io::Write::write_all` does).
                 Ok(n) if n < data.len() => {
                     let err_message = io::ErrorKind::WriteZero.to_string();
-                    (on_write)(tcp_handle, Err(anyhow!("{}", err_message)));
+                    on_write(tcp_handle, Err(anyhow!("{}", err_message)));
                 }
                 // All bytes were written to socket.
                 Ok(n) => (on_write)(tcp_handle, Ok(n)),
@@ -218,7 +218,7 @@ impl TcpStream {
                 }
                 Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
                 // An important error seems to have accrued.
-                Err(e) => (on_write)(tcp_handle, Err(e.into())),
+                Err(e) => on_write(tcp_handle, Err(e.into())),
             };
         }
 
