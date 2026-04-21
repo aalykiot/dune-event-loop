@@ -30,9 +30,9 @@ impl TcpListener {
         }
     }
 
-    /// Tries to accept a new available clients.
+    /// Tries to accept new available connections.
     pub fn accept(&mut self, loop_handle: LoopHandle) -> Vec<TcpStream> {
-        // Try to accept as many new connections as possible.
+        // Buffer to hold all new tcp streams.
         let mut clients = vec![];
 
         let handle = self.handle(loop_handle);
