@@ -127,6 +127,7 @@ impl EventLoop {
             // running, we will calculate the timout of the poll phase.
             let timeout = self.poll_timeout(&mode);
             self.run_poll(timeout);
+            self.run_close();
 
             // Check if we need to exit, or continue the loop.
             match mode {
@@ -219,6 +220,21 @@ impl EventLoop {
             // the requests queue in every iteration.
             self.process_requests();
         }
+    }
+
+    /// Runs any clean-up actions on "dying" resources.
+    fn run_close(&mut self) {
+        // Due to ownership constraints we need to get a handle
+        // to the event-loop before the for-loop.
+        let handle = self.handle();
+
+        for id in self.close_queue.drain(..) {
+            if let Some(mut resource) = self.resources.remove(id) {
+                resource.destroy(handle.clone());
+            }
+        }
+
+        self.process_requests();
     }
 
     /// Drains the request_queue to schedule new workload.
