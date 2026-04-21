@@ -353,7 +353,7 @@ impl EventLoop {
         let handle = self.handle();
 
         if let Some(resource) = self.resources.get_mut(id) {
-            resource.close(handle.clone());
+            resource.destroy(handle.clone());
             callback(handle);
         }
     }

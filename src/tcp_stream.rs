@@ -50,7 +50,7 @@ pub(crate) struct TcpStream {
 }
 
 impl Resource for TcpStream {
-    fn close(&mut self, handle: LoopHandle) {
+    fn destroy(&mut self, handle: LoopHandle) {
         // Shutdown the write side of the stream.
         self.socket.shutdown(Shutdown::Write).unwrap();
 

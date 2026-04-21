@@ -9,8 +9,8 @@ pub type ResourceId = DefaultKey;
 
 /// All objects that are tracked by the event-loop should implement the `Resource` trait.
 pub trait Resource: Downcast + 'static {
-    /// Implements any clean up actions.
-    fn close(&mut self, _: LoopHandle) {}
+    /// Runs any clean up actions.
+    fn destroy(&mut self, _: LoopHandle) {}
 }
 
 impl_downcast!(Resource);
