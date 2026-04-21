@@ -1,6 +1,6 @@
 use crate::event_loop::LoopHandle;
-use crate::event_loop::Resource;
-use crate::event_loop::ResourceId;
+use crate::resource::Resource;
+use crate::resource::ResourceId;
 use std::cell::Cell;
 use std::collections::BTreeMap;
 use std::rc::Rc;

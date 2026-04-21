@@ -1,3 +1,5 @@
+use crate::resource::ResourceId;
+use crate::resource::ResourceMap;
 use crate::tcp_stream::OnCloseCallback;
 use crate::tcp_stream::OnReadCallback;
 use crate::tcp_stream::OnWriteCallback;
@@ -11,8 +13,6 @@ use crate::timers::TimerHandle;
 use crate::timers::TimerKind;
 use crate::timers::TimersCollection;
 use anyhow::Result;
-use downcast_rs::impl_downcast;
-use downcast_rs::Downcast;
 use mio::net::TcpStream as MioSocket;
 use mio::Events;
 use mio::Interest;
@@ -23,7 +23,6 @@ use mio::Waker;
 use slotmap::DefaultKey;
 use slotmap::Key;
 use slotmap::KeyData;
-use slotmap::SlotMap;
 use std::cell::Cell;
 use std::collections::VecDeque;
 use std::io;
@@ -35,17 +34,6 @@ use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
-
-/// A type alias for resource identification.
-pub type ResourceId = DefaultKey;
-
-/// All objects that are tracked by the event-loop should implement the `Resource` trait.
-pub trait Resource: Downcast + 'static {
-    /// Implements any clean up actions.
-    fn close(&mut self, _: LoopHandle) {}
-}
-
-impl_downcast!(Resource);
 
 pub(crate) type BasicQueue = Vec<ResourceId>;
 
@@ -77,7 +65,7 @@ pub enum RunMode {
 
 pub struct EventLoop {
     current_time: Instant,
-    resources: SlotMap<ResourceId, Box<dyn Resource>>,
+    resources: ResourceMap,
     timers: TimersCollection,
     check_queue: BasicQueue,
     close_queue: BasicQueue,
@@ -112,7 +100,7 @@ impl EventLoop {
 
         EventLoop {
             current_time: Instant::now(),
-            resources: SlotMap::new(),
+            resources: ResourceMap::default(),
             timers: TimersCollection::new(),
             check_queue: Vec::new(),
             close_queue: Vec::new(),
@@ -173,8 +161,8 @@ impl EventLoop {
             // In case we have a timer in the list but we don't have it as
             // a resource that means the timer was canceled.
             let handle = self.handle();
-            let timer = match self.resources.get_mut(id) {
-                Some(resource) => resource.downcast_mut::<Timer>().unwrap(),
+            let timer = match self.resources.get_mut_as::<Timer>(id) {
+                Some(resource) => resource,
                 None => continue,
             };
 
@@ -251,30 +239,24 @@ impl EventLoop {
 
     // Processes any ready network events from MIO.
     fn process_network_event(&mut self, event: TcpEventKind) {
-        // Due to borrowing  constraints down the line, we need to
-        // aqquire a loop handle at this point.
+        // Due to borrowing constraints down the line, we need to acquire
+        // a loop handle at this point.
         let handle = self.handle();
 
         match event {
             TcpEventKind::Read(token) => {
                 // We need to get the resource ID from the MIO token.
                 let id = DefaultKey::from(KeyData::from_ffi(token.0 as u64));
-                let stream = match self.resources.get_mut(id) {
-                    Some(resource) => resource.downcast_mut::<TcpStream>().unwrap(),
-                    None => return,
-                };
+                let stream = self.resources.get_mut_as::<TcpStream>(id).unwrap();
 
-                stream.write_to_socket(handle, &mut self.registry);
+                stream.read_from_socket(handle, &mut self.registry, &mut self.close_queue);
             }
             TcpEventKind::Write(token) => {
                 // We need to get the resource ID from the MIO token.
                 let id = DefaultKey::from(KeyData::from_ffi(token.0 as u64));
-                let stream = match self.resources.get_mut(id) {
-                    Some(resource) => resource.downcast_mut::<TcpStream>().unwrap(),
-                    None => return,
-                };
+                let stream = self.resources.get_mut_as::<TcpStream>(id).unwrap();
 
-                stream.read_from_socket(handle, &mut self.registry, &mut self.close_queue);
+                stream.write_to_socket(handle, &mut self.registry);
             }
         }
     }
@@ -285,12 +267,12 @@ impl EventLoop {
         // resource ID to the value returned by the insertion operation.
         let expires_at = self.current_time + timer.delay;
 
-        let resource_id_slot = timer.id.clone();
-        let resource_id = self.resources.insert(Box::new(timer));
+        let id_slot = timer.id.clone();
+        let id = self.resources.insert(Box::new(timer));
 
-        resource_id_slot.set(resource_id);
+        id_slot.set(id);
 
-        self.timers.insert(expires_at, resource_id);
+        self.timers.insert(expires_at, id);
     }
 
     /// Removes a previously scheduled timer.
@@ -302,81 +284,75 @@ impl EventLoop {
     }
 
     /// Initializes a new tcp connection.
-    fn tcp_stream_init(&mut self, mut stream: TcpStream) {
+    fn tcp_stream_init(&mut self, stream: TcpStream) {
+        // The reason we insert the stream to the map and then we get a reference
+        // is so we can create a token with the correct resource ID.
+        let id_slot = stream.id.clone();
+        let id = self.resources.insert(Box::new(stream));
+
+        id_slot.set(id);
+
+        let stream = self.resources.get_mut_as::<TcpStream>(id).unwrap();
+
         // When we create a new tcp socket connection we have to make sure
         // it's well connected with the remote host.
         //
         // See https://docs.rs/mio/0.8.4/mio/net/struct.TcpStream.html#notes
-        let token = Token(stream.get_resource_id());
+        let token = Token(stream.get_id());
         let socket = &mut stream.socket;
 
         self.registry
             .register(socket, token, Interest::WRITABLE)
             .unwrap();
-
-        let resource_id_slot = stream.id.clone();
-        let resource_id = self.resources.insert(Box::new(stream));
-
-        resource_id_slot.set(resource_id);
     }
 
     /// Registers interest for writing to a tcp socket.
-    fn tcp_stream_write(&mut self, rid: ResourceId, data: Vec<u8>, callback: OnWriteCallback) {
-        // Get the resource from the slotmap.
-        let tcp_stream = match self.resources.get_mut(rid) {
-            Some(resource) => resource.downcast_mut::<TcpStream>().unwrap(),
-            None => return,
-        };
+    fn tcp_stream_write(&mut self, id: ResourceId, data: Vec<u8>, callback: OnWriteCallback) {
+        // Get a mut reference to a tcp stream resource.
+        let stream = self.resources.get_mut_as::<TcpStream>(id).unwrap();
+        stream.enqueue(data, callback);
 
-        tcp_stream.enqueue(data, callback);
-
-        let token = Token(tcp_stream.get_resource_id());
+        let token = Token(stream.get_id());
         let interest = Interest::READABLE.add(Interest::WRITABLE);
 
         self.registry
-            .reregister(&mut tcp_stream.socket, token, interest)
+            .reregister(&mut stream.socket, token, interest)
             .unwrap();
     }
 
     /// Registers interest for reading from a tcp socket.
-    fn tcp_stream_read_start(&mut self, rid: ResourceId, callback: OnReadCallback) {
-        // Get resource from the slotmap.
-        let tcp_stream = match self.resources.get_mut(rid) {
-            Some(resource) => resource.downcast_mut::<TcpStream>().unwrap(),
-            None => return,
-        };
+    fn tcp_stream_read_start(&mut self, id: ResourceId, callback: OnReadCallback) {
+        // Get a mut reference to a tcp stream resource.
+        let stream = self.resources.get_mut_as::<TcpStream>(id).unwrap();
+        let token = Token(stream.get_id());
 
-        let token = Token(tcp_stream.get_resource_id());
-        tcp_stream.on_read = Some(callback);
+        stream.on_read = Some(callback);
 
-        let interest = match tcp_stream.write_queue.len() {
+        let interest = match stream.write_queue.len() {
             0 => Interest::READABLE,
             _ => Interest::READABLE.add(Interest::WRITABLE),
         };
 
         self.registry
-            .reregister(&mut tcp_stream.socket, token, interest)
+            .reregister(&mut stream.socket, token, interest)
             .unwrap();
     }
 
     /// Schedules a full tcp stream shutdown.
-    fn tcp_stream_close(&mut self, rid: ResourceId, callback: OnCloseCallback) {
-        // Get the tcp stream resource.
-        let tcp_stream = match self.resources.get_mut(rid) {
-            Some(resource) => resource.downcast_mut::<TcpStream>().unwrap(),
-            None => return,
-        };
+    fn tcp_stream_close(&mut self, id: ResourceId, callback: OnCloseCallback) {
+        // Get a mut reference to a tcp stream resource.
+        let stream = self.resources.get_mut_as::<TcpStream>(id).unwrap();
+        stream.on_close = Some(callback);
 
-        tcp_stream.on_close = Some(callback);
-        self.close_queue.push(rid);
+        self.close_queue.push(id);
     }
 
     /// Closes the write side of the tcp stream.
-    fn tcp_stream_shutdown(&mut self, rid: ResourceId, callback: OnCloseCallback) {
+    fn tcp_stream_shutdown(&mut self, id: ResourceId, callback: OnCloseCallback) {
         // We need to take the handle here due to borrowing constraints.
         let handle = self.handle();
 
-        if let Some(resource) = self.resources.get_mut(rid) {
+        if let Some(resource) = self.resources.get_mut(id) {
             resource.close(handle.clone());
             callback(handle);
         }

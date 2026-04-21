@@ -1,7 +1,7 @@
 use crate::event_loop::BasicQueue;
 use crate::event_loop::LoopHandle;
-use crate::event_loop::Resource;
-use crate::event_loop::ResourceId;
+use crate::resource::Resource;
+use crate::resource::ResourceId;
 use anyhow::anyhow;
 use anyhow::Result;
 use mio::net::TcpStream as MioSocket;
@@ -183,7 +183,7 @@ impl TcpStream {
                 }),
             );
 
-            let token = Token(self.get_resource_id());
+            let token = Token(self.get_id());
 
             registry
                 .reregister(&mut self.socket, token, Interest::READABLE)
@@ -224,7 +224,7 @@ impl TcpStream {
 
         // Unregister write interest if the write_queue is empty.
         if self.write_queue.is_empty() {
-            let token = Token(self.get_resource_id());
+            let token = Token(self.get_id());
             registry
                 .reregister(&mut self.socket, token, Interest::READABLE)
                 .unwrap();
@@ -232,7 +232,7 @@ impl TcpStream {
     }
 
     /// Returns the resource id as a usize.
-    pub fn get_resource_id(&self) -> usize {
+    pub fn get_id(&self) -> usize {
         self.id.get().data().as_ffi() as usize
     }
 }
