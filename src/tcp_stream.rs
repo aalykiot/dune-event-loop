@@ -18,13 +18,13 @@ use std::net::Shutdown;
 use std::net::SocketAddr;
 use std::rc::Rc;
 
-pub type OnConnectionCallback = Box<dyn Fn(TcpStreamHandle, Result<SocketInfo>) + 'static>;
-pub type OnReadCallback = Box<dyn Fn(TcpStreamHandle, Result<Vec<u8>>) + 'static>;
-pub type OnWriteCallback = Box<dyn Fn(TcpStreamHandle, Result<usize>) + 'static>;
-pub type OnCloseCallback = Box<dyn Fn(LoopHandle) + 'static>;
+pub type OnConnectionCallback = Box<dyn FnMut(Result<TcpStreamHandle>) + 'static>;
+pub type OnReadCallback = Box<dyn FnMut(TcpStreamHandle, Result<Vec<u8>>) + 'static>;
+pub type OnWriteCallback = Box<dyn FnMut(TcpStreamHandle, Result<usize>) + 'static>;
+pub type OnCloseCallback = Box<dyn FnMut(LoopHandle) + 'static>;
 
 /// Information about the underlying tcp socket.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SocketInfo {
     pub host: SocketAddr,
     pub remote: SocketAddr,
@@ -55,7 +55,7 @@ impl Resource for TcpStream {
         self.socket.shutdown(Shutdown::Write).unwrap();
 
         // Run any user defined close action.
-        if let Some(callback) = self.on_close.take() {
+        if let Some(mut callback) = self.on_close.take() {
             callback(handle);
         }
     }
@@ -66,6 +66,7 @@ impl TcpStream {
     pub fn handle(&self, handle: LoopHandle) -> TcpStreamHandle {
         TcpStreamHandle {
             id: self.id.clone(),
+            info: self.get_socket_info(),
             handle,
         }
     }
@@ -86,6 +87,8 @@ impl TcpStream {
         // Create buffers for reading data.
         let mut data = vec![];
         let mut data_buf = [0; 4096];
+
+        let socket_info = self.get_socket_info();
 
         // This will help us catch errors and FIN packets.
         let mut read_error: Option<io::Error> = None;
@@ -125,6 +128,7 @@ impl TcpStream {
 
         let tcp_handle = TcpStreamHandle {
             id: self.id.clone(),
+            info: socket_info,
             handle: handle.clone(),
         };
 
@@ -141,48 +145,48 @@ impl TcpStream {
             _ if !is_eof => (on_read)(tcp_handle, Ok(data)),
             // FIN packet is included to the bytes we read.
             _ => {
-                (on_read)(tcp_handle.clone(), Ok(data));
-                (on_read)(tcp_handle, Ok(vec![]));
+                on_read(tcp_handle.clone(), Ok(data));
+                on_read(tcp_handle, Ok(vec![]));
             }
         };
     }
 
     /// Tries to read from a ready tcp socket. Ready means that
     /// the operation won't block the current thread.
-    pub fn write_to_socket(&mut self, handle: LoopHandle, registry: &mut Registry) {
+    pub fn write_to_socket(
+        &mut self,
+        handle: LoopHandle,
+        registry: &mut Registry,
+        close_queue: &mut BasicQueue,
+    ) {
         // Create a handle to the resource.
         let tcp_handle = TcpStreamHandle {
             id: self.id.clone(),
+            info: self.get_socket_info(),
             handle: handle.clone(),
         };
 
         // Check if the socket is in error state.
         if let Ok(Some(e)) | Err(e) = self.socket.take_error() {
-            // If `on_connection` is available it means the socket error happened
-            // while trying to connect.
-            if let Some(on_connection) = self.on_connection.take() {
-                (on_connection)(tcp_handle, Err(e.into()));
+            // If "on_connection" is available it means the socket error happened
+            // while trying to connect and we should schedule the resource for
+            // clean-up since the socket is in an error state.
+            if let Some(mut on_connection) = self.on_connection.take() {
+                on_connection(Err(e.into()));
+                close_queue.push(self.id.get());
                 return;
             }
             // Otherwise the error happened while writing.
-            if let Some((_, on_write)) = self.write_queue.pop_front() {
-                (on_write)(tcp_handle, Err(e.into()));
+            if let Some((_, mut on_write)) = self.write_queue.pop_front() {
+                on_write(tcp_handle, Err(e.into()));
                 return;
             }
         }
 
         // If the on_connection callback is None it means that in some previous iteration
         // we made sure the tcp socket is well connected with the remote host.
-        if let Some(on_connection) = self.on_connection.take() {
-            // Run socket's on_connection callback.
-            on_connection(
-                tcp_handle.clone(),
-                Ok(SocketInfo {
-                    host: self.socket.local_addr().unwrap(),
-                    remote: self.socket.peer_addr().unwrap(),
-                }),
-            );
-
+        if let Some(mut on_connection) = self.on_connection.take() {
+            on_connection(Ok(tcp_handle.clone()));
             let token = Token(self.get_id());
 
             registry
@@ -193,7 +197,7 @@ impl TcpStream {
         loop {
             // Connection is okay, let's write some bytes.
             let tcp_handle = tcp_handle.clone();
-            let (data, on_write) = match self.write_queue.pop_front() {
+            let (data, mut on_write) = match self.write_queue.pop_front() {
                 Some(value) => value,
                 None => break,
             };
@@ -231,6 +235,14 @@ impl TcpStream {
         }
     }
 
+    /// Returns information about the connected socket.
+    pub fn get_socket_info(&self) -> SocketInfo {
+        SocketInfo {
+            host: self.socket.local_addr().unwrap(),
+            remote: self.socket.peer_addr().unwrap(),
+        }
+    }
+
     /// Returns the resource id as a usize.
     pub fn get_id(&self) -> usize {
         self.id.get().data().as_ffi() as usize
@@ -242,6 +254,8 @@ impl TcpStream {
 pub struct TcpStreamHandle {
     /// A shared pointer to the resource ID of the connection.
     pub(crate) id: Rc<Cell<ResourceId>>,
+    /// Information about the connected socket.
+    pub info: SocketInfo,
     /// A handle to the event-loop.
     handle: LoopHandle,
 }

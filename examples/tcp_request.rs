@@ -1,7 +1,6 @@
 extern crate dune_event_loop;
 
 use anyhow::Result;
-use dune_event_loop::tcp_stream::SocketInfo;
 use dune_event_loop::tcp_stream::TcpStreamHandle;
 use dune_event_loop::EventLoop;
 use dune_event_loop::LoopHandle;
@@ -23,17 +22,14 @@ fn main() {
         };
     };
 
-    const HTTP_REQUEST: &str =
-        "GET / HTTP/1.1\r\nHost: rssweather.com\r\nConnection: close\r\n\r\n";
+    const HTTP_REQUEST: &[u8] =
+        b"GET / HTTP/1.1\r\nHost: rssweather.com\r\nConnection: close\r\n\r\n";
 
-    let on_connection = move |stream: TcpStreamHandle, socket: Result<SocketInfo>| match socket {
-        Ok(_) => {
+    let on_connection = move |stream: Result<TcpStreamHandle>| match stream {
+        Err(e) => eprintln!("{}", e),
+        Ok(stream) => {
             stream.set_read_callback(on_read);
-            stream.write(HTTP_REQUEST.as_bytes().to_vec(), on_write);
-        }
-        Err(e) => {
-            eprintln!("{}", e);
-            stream.close(|_: LoopHandle| {});
+            stream.write(HTTP_REQUEST.to_vec(), on_write);
         }
     };
 

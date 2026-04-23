@@ -4,7 +4,6 @@ use crate::tcp_listener::TcpListener;
 use crate::tcp_stream::OnCloseCallback;
 use crate::tcp_stream::OnReadCallback;
 use crate::tcp_stream::OnWriteCallback;
-use crate::tcp_stream::SocketInfo;
 use crate::tcp_stream::TcpEventKind;
 use crate::tcp_stream::TcpStream;
 use crate::tcp_stream::TcpStreamHandle;
@@ -298,8 +297,10 @@ impl EventLoop {
                 // We need to get the resource ID from the MIO token.
                 let id = DefaultKey::from(KeyData::from_ffi(token.0 as u64));
                 let stream = self.resources.get_mut_as::<TcpStream>(id).unwrap();
+                let registry = &mut self.registry;
+                let close_queue = &mut self.close_queue;
 
-                stream.write_to_socket(handle, &mut self.registry);
+                stream.write_to_socket(handle, registry, close_queue);
             }
         }
     }
@@ -391,7 +392,7 @@ impl EventLoop {
     }
 
     /// Closes the write side of the tcp stream.
-    fn tcp_stream_shutdown(&mut self, id: ResourceId, callback: OnCloseCallback) {
+    fn tcp_stream_shutdown(&mut self, id: ResourceId, mut callback: OnCloseCallback) {
         // We need to take the handle here due to borrowing constraints.
         let handle = self.handle();
 
@@ -470,9 +471,9 @@ impl LoopHandle {
     }
 
     /// Creates a new tcp stream and connects to the specified address.
-    pub fn tcp_connect<F>(&self, address: SocketAddr, callback: F) -> Result<TcpStreamHandle>
+    pub fn tcp_connect<F>(&self, address: SocketAddr, callback: F) -> Result<()>
     where
-        F: Fn(TcpStreamHandle, Result<SocketInfo>) + 'static,
+        F: FnMut(Result<TcpStreamHandle>) + 'static,
     {
         // Since the resource is not yet scheduled in the event-loop, we create a
         // null ID. The event-loop will update this value with a real ID later.
@@ -489,20 +490,16 @@ impl LoopHandle {
             write_queue: VecDeque::new(),
         };
 
-        // Create a stream handle that we will return to the caller.
-        let handle = stream.handle(self.clone());
-        let request = Request::TcpInit(stream);
-
-        self.request_sender.send(request).unwrap();
+        self.request_sender.send(Request::TcpInit(stream)).unwrap();
         self.request_queue_empty.set(false);
 
-        Ok(handle)
+        Ok(())
     }
 
     /// Writes bytes to an open tcp stream.
     pub(crate) fn tcp_write<F>(&self, id: ResourceId, data: Vec<u8>, callback: F)
     where
-        F: Fn(TcpStreamHandle, Result<usize>) + 'static,
+        F: FnMut(TcpStreamHandle, Result<usize>) + 'static,
     {
         let request = Request::TcpWrite(id, data, Box::new(callback));
 
@@ -524,7 +521,7 @@ impl LoopHandle {
     /// Closes the write side of the tcp stream.
     pub(crate) fn tcp_shutdown<F>(&self, id: ResourceId, callback: F)
     where
-        F: Fn(LoopHandle) + 'static,
+        F: FnMut(LoopHandle) + 'static,
     {
         let request = Request::TcpShutdown(id, Box::new(callback));
 
@@ -535,7 +532,7 @@ impl LoopHandle {
     /// Completely shutdowns the tcp stream.
     pub(crate) fn tcp_close<F>(&self, id: ResourceId, callback: F)
     where
-        F: Fn(LoopHandle) + 'static,
+        F: FnMut(LoopHandle) + 'static,
     {
         let request = Request::TcpClose(id, Box::new(callback));
 
