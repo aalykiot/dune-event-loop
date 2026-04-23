@@ -168,7 +168,7 @@ impl TcpStream {
 
         // Check if the socket is in error state.
         if let Ok(Some(e)) | Err(e) = self.socket.take_error() {
-            // If "on_connection" is available it means the socket error happened
+            // if the on_connection callback is not None it means a socket error happened
             // while trying to connect and we should schedule the resource for
             // clean-up since the socket is in an error state.
             if let Some(mut on_connection) = self.on_connection.take() {

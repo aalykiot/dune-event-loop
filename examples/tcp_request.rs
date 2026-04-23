@@ -7,7 +7,7 @@ use dune_event_loop::LoopHandle;
 use dune_event_loop::RunMode;
 
 fn main() {
-    let address = "104.21.45.178:80".parse().unwrap();
+    let address = "188.184.67.127:80".parse().unwrap();
     let mut event_loop = EventLoop::default();
     let handle = event_loop.handle();
 
@@ -23,7 +23,7 @@ fn main() {
     };
 
     const HTTP_REQUEST: &[u8] =
-        b"GET / HTTP/1.1\r\nHost: rssweather.com\r\nConnection: close\r\n\r\n";
+        b"GET / HTTP/1.1\r\nHost: info.cern.ch\r\nConnection: close\r\n\r\n";
 
     let on_connection = move |stream: Result<TcpStreamHandle>| match stream {
         Err(e) => eprintln!("{}", e),
