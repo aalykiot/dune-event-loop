@@ -1,6 +1,7 @@
 use crate::resource::ResourceId;
 use crate::resource::ResourceMap;
 use crate::tcp_listener::TcpListener;
+use crate::tcp_listener::TcpListenerHandle;
 use crate::tcp_stream::OnCloseCallback;
 use crate::tcp_stream::OnReadCallback;
 use crate::tcp_stream::OnWriteCallback;
@@ -13,6 +14,7 @@ use crate::timers::TimerHandle;
 use crate::timers::TimerKind;
 use crate::timers::TimersCollection;
 use anyhow::Result;
+use mio::net::TcpListener as MioListener;
 use mio::net::TcpStream as MioSocket;
 use mio::Events;
 use mio::Interest;
@@ -43,6 +45,7 @@ enum Request {
     TcpInit(TcpStream),
     TcpWrite(ResourceId, Vec<u8>, OnWriteCallback),
     TcpRead(ResourceId, OnReadCallback),
+    TcpListen(TcpListener),
     TcpShutdown(ResourceId, OnCloseCallback),
     TcpClose(ResourceId, OnCloseCallback),
 }
@@ -242,12 +245,13 @@ impl EventLoop {
         while let Ok(request) = self.request_queue.try_recv() {
             match request {
                 Request::TimerStart(timer) => self.timer_start(timer),
-                Request::TimerCancel(rid) => self.timer_cancel(rid),
+                Request::TimerCancel(id) => self.timer_cancel(id),
                 Request::TcpInit(stream) => self.tcp_stream_init(stream),
-                Request::TcpRead(rid, callback) => self.tcp_stream_read_start(rid, callback),
-                Request::TcpWrite(rid, data, cb) => self.tcp_stream_write(rid, data, cb),
-                Request::TcpShutdown(rid, callback) => self.tcp_stream_shutdown(rid, callback),
-                Request::TcpClose(rid, callback) => self.tcp_stream_close(rid, callback),
+                Request::TcpRead(id, callback) => self.tcp_stream_read_start(id, callback),
+                Request::TcpWrite(id, data, cb) => self.tcp_stream_write(id, data, cb),
+                Request::TcpShutdown(id, callback) => self.tcp_stream_shutdown(id, callback),
+                Request::TcpClose(id, callback) => self.tcp_stream_close(id, callback),
+                Request::TcpListen(listener) => self.tcp_listener_init(listener),
             }
         }
         self.request_queue_empty.set(true);
@@ -347,6 +351,24 @@ impl EventLoop {
 
         self.registry
             .register(socket, token, Interest::WRITABLE)
+            .unwrap();
+    }
+
+    /// Initializes a new tcp listener.
+    fn tcp_listener_init(&mut self, listener: TcpListener) {
+        // The reason we insert the stream to the map and then we get a reference
+        // is so we can create a token with the correct resource ID.
+        let id_slot = listener.id.clone();
+        let id = self.resources.insert(Box::new(listener));
+
+        id_slot.set(id);
+
+        let listener = self.resources.get_mut_as::<TcpListener>(id).unwrap();
+        let token = listener.token();
+        let socket = &mut listener.socket;
+
+        self.registry
+            .register(socket, token, Interest::READABLE)
             .unwrap();
     }
 
@@ -491,6 +513,32 @@ impl LoopHandle {
         };
 
         self.request_sender.send(Request::TcpInit(stream)).unwrap();
+        self.request_queue_empty.set(false);
+
+        Ok(())
+    }
+
+    /// Starts listening for incoming connections.
+    pub fn tcp_listen<F>(&self, address: SocketAddr, callback: F) -> Result<()>
+    where
+        F: FnMut(TcpListenerHandle, Result<TcpStreamHandle>) + 'static,
+    {
+        // Since the resource is not yet scheduled in the event-loop, we create a
+        // null ID. The event-loop will update this value with a real ID later.
+        let id = Rc::new(Cell::new(DefaultKey::null()));
+        let on_connection = Box::new(callback);
+
+        // Bind address to the socket.
+        let socket = MioListener::bind(address)?;
+        let listener = TcpListener {
+            id,
+            socket,
+            on_connection,
+        };
+
+        self.request_sender
+            .send(Request::TcpListen(listener))
+            .unwrap();
         self.request_queue_empty.set(false);
 
         Ok(())

@@ -1,10 +1,11 @@
 use crate::event_loop::LoopHandle;
 use crate::resource::Resource;
 use crate::resource::ResourceId;
-use crate::tcp_stream::SocketInfo;
 use crate::tcp_stream::TcpStream;
+use crate::tcp_stream::TcpStreamHandle;
 use anyhow::Result;
 use mio::net::TcpListener as MioListener;
+use mio::Token;
 use slotmap::DefaultKey;
 use slotmap::Key;
 use std::cell::Cell;
@@ -12,12 +13,12 @@ use std::collections::VecDeque;
 use std::io;
 use std::rc::Rc;
 
-type OnConnectionCallback = Box<dyn Fn(TcpListenerHandle, Result<SocketInfo>) + 'static>;
+type OnConnectionCallback = Box<dyn FnMut(TcpListenerHandle, Result<TcpStreamHandle>) + 'static>;
 
 /// The data required for a tcp listener resource.
 pub(crate) struct TcpListener {
     pub id: Rc<Cell<ResourceId>>,
-    pub listener: MioListener,
+    pub socket: MioListener,
     pub on_connection: OnConnectionCallback,
 }
 
@@ -35,14 +36,14 @@ impl TcpListener {
         // Buffer to hold all new tcp streams.
         let mut clients = vec![];
 
-        let handle = self.handle(loop_handle);
+        let handle = self.handle(loop_handle.clone());
         let callback = self.on_connection.as_mut();
 
         loop {
             // Received an event for the tcp listener, which indicates
             // we can accept a new connection.
             let handle = handle.clone();
-            let (socket, _) = match self.listener.accept() {
+            let (socket, _) = match self.socket.accept() {
                 Ok(socket) => socket,
                 // If we get a "WouldBlock" error we know our listener has no more incoming
                 // connections queued, so we can return to polling and wait for some more.
@@ -56,8 +57,6 @@ impl TcpListener {
             // Since the resource is not yet scheduled in the event-loop, we create a
             // null ID. The event-loop will update this value with a real ID later.
             let id = Rc::new(Cell::new(DefaultKey::null()));
-            let host = socket.local_addr().unwrap();
-            let remote = socket.peer_addr().unwrap();
 
             let stream = TcpStream {
                 id,
@@ -68,11 +67,16 @@ impl TcpListener {
                 write_queue: VecDeque::new(),
             };
 
-            callback(handle, Ok(SocketInfo { host, remote }));
+            callback(handle, Ok(stream.handle(loop_handle.clone())));
             clients.push(stream);
         }
 
         clients
+    }
+
+    /// Returns a token linked to the underline socket.
+    pub fn token(&self) -> Token {
+        Token(self.id.get().data().as_ffi() as usize)
     }
 }
 
