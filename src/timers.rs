@@ -1,9 +1,8 @@
 use crate::event_loop::LoopHandle;
 use crate::resource::Resource;
 use crate::resource::ResourceId;
-use std::cell::Cell;
+use crate::resource::Shared;
 use std::collections::BTreeMap;
-use std::rc::Rc;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -51,7 +50,7 @@ pub enum TimerKind {
 
 /// The data required for a timer resource.
 pub(crate) struct Timer {
-    pub id: Rc<Cell<ResourceId>>,
+    pub id: Shared<ResourceId>,
     pub delay: Duration,
     pub callback: TimerCallback,
     pub kind: TimerKind,
@@ -78,7 +77,7 @@ impl Resource for Timer {}
 #[derive(Debug, Clone)]
 pub struct TimerHandle {
     /// A shared pointer to the resource ID of the timer.
-    pub(crate) id: Rc<Cell<ResourceId>>,
+    pub(crate) id: Shared<ResourceId>,
     /// A handle to the event-loop.
     handle: LoopHandle,
 }
@@ -87,6 +86,6 @@ impl TimerHandle {
     /// Cancels the scheduled timer.
     pub fn cancel(self) {
         // Consume self and call the internal cancle_timer method.
-        self.handle.cancel_timer(self.id.get());
+        self.handle.cancel_timer(self.id.clone());
     }
 }

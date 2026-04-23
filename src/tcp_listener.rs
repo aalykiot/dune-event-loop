@@ -1,6 +1,7 @@
 use crate::event_loop::LoopHandle;
 use crate::resource::Resource;
 use crate::resource::ResourceId;
+use crate::resource::Shared;
 use crate::tcp_stream::TcpStream;
 use crate::tcp_stream::TcpStreamHandle;
 use anyhow::Result;
@@ -17,7 +18,7 @@ type OnConnectionCallback = Box<dyn FnMut(TcpListenerHandle, Result<TcpStreamHan
 
 /// The data required for a tcp listener resource.
 pub(crate) struct TcpListener {
-    pub id: Rc<Cell<ResourceId>>,
+    pub id: Shared<ResourceId>,
     pub socket: MioListener,
     pub on_connection: OnConnectionCallback,
 }
@@ -86,7 +87,7 @@ impl Resource for TcpListener {}
 #[derive(Debug, Clone)]
 pub struct TcpListenerHandle {
     /// A shared pointer to the resource ID of the listener.
-    pub(crate) id: Rc<Cell<ResourceId>>,
+    pub(crate) id: Shared<ResourceId>,
     /// A handle to the event-loop.
     handle: LoopHandle,
 }

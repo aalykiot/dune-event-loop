@@ -3,9 +3,12 @@ use downcast_rs::impl_downcast;
 use downcast_rs::Downcast;
 use slotmap::DefaultKey;
 use slotmap::SlotMap;
+use std::cell::Cell;
+use std::rc::Rc;
 
 /// A type alias for resource identification.
 pub type ResourceId = DefaultKey;
+pub type Shared<T> = Rc<Cell<T>>;
 
 /// All objects that are tracked by the event-loop should implement the `Resource` trait.
 pub trait Resource: Downcast + 'static {

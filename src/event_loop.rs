@@ -1,5 +1,6 @@
 use crate::resource::ResourceId;
 use crate::resource::ResourceMap;
+use crate::resource::Shared;
 use crate::tcp_listener::TcpListener;
 use crate::tcp_listener::TcpListenerHandle;
 use crate::tcp_stream::OnCloseCallback;
@@ -41,13 +42,13 @@ pub(crate) type BasicQueue = Vec<ResourceId>;
 
 enum Request {
     TimerStart(Timer),
-    TimerCancel(ResourceId),
+    TimerCancel(Shared<ResourceId>),
     TcpInit(TcpStream),
-    TcpWrite(ResourceId, Vec<u8>, OnWriteCallback),
-    TcpRead(ResourceId, OnReadCallback),
+    TcpWrite(Shared<ResourceId>, Vec<u8>, OnWriteCallback),
+    TcpRead(Shared<ResourceId>, OnReadCallback),
     TcpListen(TcpListener),
-    TcpShutdown(ResourceId, OnCloseCallback),
-    TcpClose(ResourceId, OnCloseCallback),
+    TcpShutdown(Shared<ResourceId>, OnCloseCallback),
+    TcpClose(Shared<ResourceId>, OnCloseCallback),
 }
 
 #[allow(dead_code)]
@@ -289,7 +290,7 @@ impl EventLoop {
                     // We need to get the stream from the resources to satisfy
                     // rust's ownership and borrowing rules.
                     let stream = self.resources.get_mut_as::<TcpStream>(id).unwrap();
-                    let token = Token(stream.get_id());
+                    let token = stream.token();
                     let socket = &mut stream.socket;
 
                     self.registry
@@ -324,11 +325,11 @@ impl EventLoop {
     }
 
     /// Removes a previously scheduled timer.
-    fn timer_cancel(&mut self, rid: ResourceId) {
+    fn timer_cancel(&mut self, id: Shared<ResourceId>) {
         // To achieve O(1) cancellation, we remove the resource but keep the entry
         // in the timer collection. When processing expired timers, canceled
         // ones are simply ignored.
-        self.resources.remove(rid);
+        self.resources.remove(id.get());
     }
 
     /// Initializes a new tcp connection.
@@ -346,7 +347,7 @@ impl EventLoop {
         // it's well connected with the remote host.
         //
         // See https://docs.rs/mio/0.8.4/mio/net/struct.TcpStream.html#notes
-        let token = Token(stream.get_id());
+        let token = stream.token();
         let socket = &mut stream.socket;
 
         self.registry
@@ -373,12 +374,17 @@ impl EventLoop {
     }
 
     /// Registers interest for writing to a tcp socket.
-    fn tcp_stream_write(&mut self, id: ResourceId, data: Vec<u8>, callback: OnWriteCallback) {
+    fn tcp_stream_write(
+        &mut self,
+        id: Shared<ResourceId>,
+        data: Vec<u8>,
+        callback: OnWriteCallback,
+    ) {
         // Get a mut reference to a tcp stream resource.
-        let stream = self.resources.get_mut_as::<TcpStream>(id).unwrap();
+        let stream = self.resources.get_mut_as::<TcpStream>(id.get()).unwrap();
         stream.enqueue(data, callback);
 
-        let token = Token(stream.get_id());
+        let token = stream.token();
         let interest = Interest::READABLE.add(Interest::WRITABLE);
 
         self.registry
@@ -387,10 +393,10 @@ impl EventLoop {
     }
 
     /// Registers interest for reading from a tcp socket.
-    fn tcp_stream_read_start(&mut self, id: ResourceId, callback: OnReadCallback) {
+    fn tcp_stream_read_start(&mut self, id: Shared<ResourceId>, callback: OnReadCallback) {
         // Get a mut reference to a tcp stream resource.
-        let stream = self.resources.get_mut_as::<TcpStream>(id).unwrap();
-        let token = Token(stream.get_id());
+        let stream = self.resources.get_mut_as::<TcpStream>(id.get()).unwrap();
+        let token = stream.token();
 
         stream.on_read = Some(callback);
 
@@ -405,20 +411,20 @@ impl EventLoop {
     }
 
     /// Schedules a full tcp stream shutdown.
-    fn tcp_stream_close(&mut self, id: ResourceId, callback: OnCloseCallback) {
+    fn tcp_stream_close(&mut self, id: Shared<ResourceId>, callback: OnCloseCallback) {
         // Get a mut reference to a tcp stream resource.
-        let stream = self.resources.get_mut_as::<TcpStream>(id).unwrap();
+        let stream = self.resources.get_mut_as::<TcpStream>(id.get()).unwrap();
         stream.on_close = Some(callback);
 
-        self.close_queue.push(id);
+        self.close_queue.push(id.get());
     }
 
     /// Closes the write side of the tcp stream.
-    fn tcp_stream_shutdown(&mut self, id: ResourceId, mut callback: OnCloseCallback) {
+    fn tcp_stream_shutdown(&mut self, id: Shared<ResourceId>, mut callback: OnCloseCallback) {
         // We need to take the handle here due to borrowing constraints.
         let handle = self.handle();
 
-        if let Some(resource) = self.resources.get_mut(id) {
+        if let Some(resource) = self.resources.get_mut(id.get()) {
             resource.destroy(handle.clone());
             callback(handle);
         }
@@ -484,7 +490,7 @@ impl LoopHandle {
     }
 
     /// Removes a timer from the event-loop.
-    pub(crate) fn cancel_timer(&self, id: ResourceId) {
+    pub(crate) fn cancel_timer(&self, id: Shared<ResourceId>) {
         // Send a cancel request.
         let request = Request::TimerCancel(id);
 
@@ -545,7 +551,7 @@ impl LoopHandle {
     }
 
     /// Writes bytes to an open tcp stream.
-    pub(crate) fn tcp_write<F>(&self, id: ResourceId, data: Vec<u8>, callback: F)
+    pub(crate) fn tcp_write<F>(&self, id: Shared<ResourceId>, data: Vec<u8>, callback: F)
     where
         F: FnMut(TcpStreamHandle, Result<usize>) + 'static,
     {
@@ -556,7 +562,7 @@ impl LoopHandle {
     }
 
     /// Starts reading from an open tcp stream.
-    pub(crate) fn tcp_read_start<F>(&self, id: ResourceId, callback: F)
+    pub(crate) fn tcp_read_start<F>(&self, id: Shared<ResourceId>, callback: F)
     where
         F: Fn(TcpStreamHandle, Result<Vec<u8>>) + 'static,
     {
@@ -567,7 +573,7 @@ impl LoopHandle {
     }
 
     /// Closes the write side of the tcp stream.
-    pub(crate) fn tcp_shutdown<F>(&self, id: ResourceId, callback: F)
+    pub(crate) fn tcp_shutdown<F>(&self, id: Shared<ResourceId>, callback: F)
     where
         F: FnMut(LoopHandle) + 'static,
     {
@@ -578,7 +584,7 @@ impl LoopHandle {
     }
 
     /// Completely shutdowns the tcp stream.
-    pub(crate) fn tcp_close<F>(&self, id: ResourceId, callback: F)
+    pub(crate) fn tcp_close<F>(&self, id: Shared<ResourceId>, callback: F)
     where
         F: FnMut(LoopHandle) + 'static,
     {

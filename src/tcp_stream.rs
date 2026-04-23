@@ -2,6 +2,7 @@ use crate::event_loop::BasicQueue;
 use crate::event_loop::LoopHandle;
 use crate::resource::Resource;
 use crate::resource::ResourceId;
+use crate::resource::Shared;
 use anyhow::anyhow;
 use anyhow::Result;
 use mio::net::TcpStream as MioSocket;
@@ -9,14 +10,12 @@ use mio::Interest;
 use mio::Registry;
 use mio::Token;
 use slotmap::Key;
-use std::cell::Cell;
 use std::collections::VecDeque;
 use std::io;
 use std::io::Read;
 use std::io::Write;
 use std::net::Shutdown;
 use std::net::SocketAddr;
-use std::rc::Rc;
 
 pub type OnConnectionCallback = Box<dyn FnMut(Result<TcpStreamHandle>) + 'static>;
 pub type OnReadCallback = Box<dyn FnMut(TcpStreamHandle, Result<Vec<u8>>) + 'static>;
@@ -41,7 +40,7 @@ pub(crate) enum TcpEventKind {
 
 /// The data required for a tcp connection resource.
 pub(crate) struct TcpStream {
-    pub id: Rc<Cell<ResourceId>>,
+    pub id: Shared<ResourceId>,
     pub socket: MioSocket,
     pub on_connection: Option<OnConnectionCallback>,
     pub on_read: Option<OnReadCallback>,
@@ -186,8 +185,8 @@ impl TcpStream {
         // If the on_connection callback is None it means that in some previous iteration
         // we made sure the tcp socket is well connected with the remote host.
         if let Some(mut on_connection) = self.on_connection.take() {
+            let token = self.token();
             on_connection(Ok(tcp_handle.clone()));
-            let token = Token(self.get_id());
 
             registry
                 .reregister(&mut self.socket, token, Interest::READABLE)
@@ -228,9 +227,11 @@ impl TcpStream {
 
         // Unregister write interest if the write_queue is empty.
         if self.write_queue.is_empty() {
-            let token = Token(self.get_id());
+            let token = self.token();
+            let socket = &mut self.socket;
+
             registry
-                .reregister(&mut self.socket, token, Interest::READABLE)
+                .reregister(socket, token, Interest::READABLE)
                 .unwrap();
         }
     }
@@ -243,9 +244,9 @@ impl TcpStream {
         }
     }
 
-    /// Returns the resource id as a usize.
-    pub fn get_id(&self) -> usize {
-        self.id.get().data().as_ffi() as usize
+    /// Returns a token linked to the underline socket.
+    pub fn token(&self) -> Token {
+        Token(self.id.get().data().as_ffi() as usize)
     }
 }
 
@@ -253,7 +254,7 @@ impl TcpStream {
 #[derive(Debug, Clone)]
 pub struct TcpStreamHandle {
     /// A shared pointer to the resource ID of the connection.
-    pub(crate) id: Rc<Cell<ResourceId>>,
+    pub(crate) id: Shared<ResourceId>,
     /// Information about the connected socket.
     pub info: SocketInfo,
     /// A handle to the event-loop.
@@ -267,7 +268,7 @@ impl TcpStreamHandle {
         F: Fn(TcpStreamHandle, Result<usize>) + 'static,
     {
         // Use the event-loop handle to write.
-        self.handle.tcp_write(self.id.get(), data, callback);
+        self.handle.tcp_write(self.id.clone(), data, callback);
     }
 
     /// Starts reading from a tcp stream.
@@ -276,7 +277,7 @@ impl TcpStreamHandle {
         F: Fn(TcpStreamHandle, Result<Vec<u8>>) + 'static,
     {
         // Use the event-loop handle to set a read callback for the stream.
-        self.handle.tcp_read_start(self.id.get(), callback);
+        self.handle.tcp_read_start(self.id.clone(), callback);
     }
 
     /// Closes the write side of the TCP stream.
@@ -285,7 +286,7 @@ impl TcpStreamHandle {
         F: Fn(LoopHandle) + 'static,
     {
         // Use the event-loop handle to shutdown the write side of the stream.
-        self.handle.tcp_shutdown(self.id.get(), callback);
+        self.handle.tcp_shutdown(self.id.clone(), callback);
     }
 
     /// Completely closes the tcp stream.
@@ -294,7 +295,7 @@ impl TcpStreamHandle {
         F: Fn(LoopHandle) + 'static,
     {
         // Use the event-loop handle to close the stream.
-        self.handle.tcp_close(self.id.get(), callback);
+        self.handle.tcp_close(self.id.clone(), callback);
     }
 
     /// Returns a handle to the event-loop.
