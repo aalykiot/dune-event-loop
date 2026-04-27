@@ -2,6 +2,7 @@ use crate::event_loop::LoopHandle;
 use crate::resource::Resource;
 use crate::resource::ResourceId;
 use crate::resource::Shared;
+use crate::tcp_stream::OnCloseCallback;
 use crate::tcp_stream::TcpStream;
 use crate::tcp_stream::TcpStreamHandle;
 use anyhow::Result;
@@ -21,6 +22,7 @@ pub(crate) struct TcpListener {
     pub id: Shared<ResourceId>,
     pub socket: MioListener,
     pub on_connection: OnConnectionCallback,
+    pub on_close: Option<OnCloseCallback>,
 }
 
 impl TcpListener {
@@ -90,4 +92,20 @@ pub struct TcpListenerHandle {
     pub(crate) id: Shared<ResourceId>,
     /// A handle to the event-loop.
     handle: LoopHandle,
+}
+
+impl TcpListenerHandle {
+    /// Stops the server from accepting new tcp connections.
+    pub fn shutdown<F>(&self, callback: F)
+    where
+        F: Fn(LoopHandle) + 'static,
+    {
+        // Use the event-loop handle to shutdown the tcp listenr.
+        self.handle.tcp_stop(self.id.clone(), callback);
+    }
+
+    /// Returns a handle to the event-loop.
+    pub fn get_loop(&self) -> LoopHandle {
+        self.handle.clone()
+    }
 }

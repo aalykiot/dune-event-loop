@@ -46,9 +46,10 @@ enum Request {
     TcpInit(TcpStream),
     TcpWrite(Shared<ResourceId>, Vec<u8>, OnWriteCallback),
     TcpRead(Shared<ResourceId>, OnReadCallback),
-    TcpListen(TcpListener),
     TcpShutdown(Shared<ResourceId>, OnCloseCallback),
     TcpClose(Shared<ResourceId>, OnCloseCallback),
+    TcpListen(TcpListener),
+    TcpListenStop(Shared<ResourceId>, OnCloseCallback),
 }
 
 #[allow(dead_code)]
@@ -253,6 +254,7 @@ impl EventLoop {
                 Request::TcpShutdown(id, callback) => self.tcp_stream_shutdown(id, callback),
                 Request::TcpClose(id, callback) => self.tcp_stream_close(id, callback),
                 Request::TcpListen(listener) => self.tcp_listener_init(listener),
+                Request::TcpListenStop(id, callback) => self.tcp_listener_stop(id, callback),
             }
         }
         self.request_queue_empty.set(true);
@@ -419,6 +421,15 @@ impl EventLoop {
         self.close_queue.push(id.get());
     }
 
+    /// Stops the listener from accepting new connections.
+    fn tcp_listener_stop(&mut self, id: Shared<ResourceId>, callback: OnCloseCallback) {
+        // Get a mut reference to a tcp stream resource.
+        let stream = self.resources.get_mut_as::<TcpListener>(id.get()).unwrap();
+        stream.on_close = Some(callback);
+
+        self.close_queue.push(id.get());
+    }
+
     /// Closes the write side of the tcp stream.
     fn tcp_stream_shutdown(&mut self, id: Shared<ResourceId>, mut callback: OnCloseCallback) {
         // We need to take the handle here due to borrowing constraints.
@@ -540,6 +551,7 @@ impl LoopHandle {
             id,
             socket,
             on_connection,
+            on_close: None,
         };
 
         self.request_sender
@@ -589,6 +601,17 @@ impl LoopHandle {
         F: FnMut(LoopHandle) + 'static,
     {
         let request = Request::TcpClose(id, Box::new(callback));
+
+        self.request_sender.send(request).unwrap();
+        self.request_queue_empty.set(false);
+    }
+
+    /// Stops a listener from accepting new connections.
+    pub(crate) fn tcp_stop<F>(&self, id: Shared<ResourceId>, callback: F)
+    where
+        F: FnMut(LoopHandle) + 'static,
+    {
+        let request = Request::TcpListenStop(id, Box::new(callback));
 
         self.request_sender.send(request).unwrap();
         self.request_queue_empty.set(false);
