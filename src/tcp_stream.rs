@@ -280,7 +280,7 @@ impl TcpStreamHandle {
         self.handle.tcp_read_start(self.id.clone(), callback);
     }
 
-    /// Closes the write side of the TCP stream.
+    /// Closes the write side of the tcp stream.
     pub fn shutdown<F>(&self, callback: F)
     where
         F: Fn(LoopHandle) + 'static,

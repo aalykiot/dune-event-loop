@@ -96,7 +96,7 @@ pub struct TcpListenerHandle {
 
 impl TcpListenerHandle {
     /// Stops the server from accepting new tcp connections.
-    pub fn shutdown<F>(&self, callback: F)
+    pub fn shutdown<F>(self, callback: F)
     where
         F: Fn(LoopHandle) + 'static,
     {
