@@ -441,8 +441,8 @@ impl EventLoop {
         }
     }
 
-    /// Returns if there is pending work still ongoing.
-    fn has_pending_events(&self) -> bool {
+    /// Returns true if there is pending work still ongoing.
+    pub fn has_pending_events(&self) -> bool {
         !self.resources.is_empty()
             || !self.request_queue_empty.get()
             || self.thread_pool.pending_count() != 0
