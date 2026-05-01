@@ -8,7 +8,7 @@ use std::sync::mpsc;
 pub type TaskOutput = Option<Result<Vec<u8>>>;
 
 pub type TaskFn = Box<dyn FnOnce() -> TaskOutput + Send>;
-pub type TaskCallback = Box<dyn FnOnce(LoopHandle, TaskOutput) + 'static>;
+pub type TaskCallback = Box<dyn FnMut(LoopHandle, TaskOutput) + 'static>;
 
 /// The data required for a task resource.
 pub(crate) struct Task {
@@ -20,7 +20,7 @@ pub(crate) struct Task {
 impl Task {
     /// Runs the callback of the task.
     pub fn run_callback(&mut self, result: TaskOutput, handle: LoopHandle) {
-        if let Some(callback) = self.on_complete.take() {
+        if let Some(mut callback) = self.on_complete.take() {
             callback(handle, result);
         }
     }
@@ -55,8 +55,8 @@ impl TaskHandle {
     pub fn cancel(self) {
         // Notify for the cancelation and remove the resource.
         let handle = self.handle.clone();
-        self.cancelation.send(());
+        let _ = self.cancelation.send(());
 
-        // handle.task_cancel(self);
+        handle.cancel_task(self.id.clone());
     }
 }

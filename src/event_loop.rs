@@ -55,6 +55,8 @@ enum Request {
     TcpClose(Shared<ResourceId>, OnCloseCallback),
     TcpListen(TcpListener),
     TcpListenStop(Shared<ResourceId>, OnCloseCallback),
+    TaskSpawn(Task, TaskFn, mpsc::Receiver<()>),
+    TaskCancel(Shared<ResourceId>),
 }
 
 #[allow(dead_code)]
@@ -272,6 +274,8 @@ impl EventLoop {
                 Request::TcpClose(id, callback) => self.tcp_stream_close(id, callback),
                 Request::TcpListen(listener) => self.tcp_listener_init(listener),
                 Request::TcpListenStop(id, callback) => self.tcp_listener_stop(id, callback),
+                Request::TaskSpawn(task, work, cancel_rx) => self.task_spawn(task, work, cancel_rx),
+                Request::TaskCancel(id) => self.task_cancel(id),
             }
         }
         self.request_queue_empty.set(true);
@@ -390,11 +394,11 @@ impl EventLoop {
     }
 
     /// Removes a previously queued task.
-    fn task_cancel(&mut self, handle: TaskHandle) {
+    fn task_cancel(&mut self, id: Shared<ResourceId>) {
         // We only need to remove the resource from the map. If a task is already
         // running in the thread pool, its result will be discarded when
         // finished tasks are processed.
-        self.resources.remove(handle.id.get());
+        self.resources.remove(id.get());
     }
 
     /// Initializes a new tcp connection.
@@ -567,6 +571,42 @@ impl LoopHandle {
     pub(crate) fn cancel_timer(&self, id: Shared<ResourceId>) {
         // Send a cancel request.
         let request = Request::TimerCancel(id);
+
+        self.request_sender.send(request).unwrap();
+        self.request_queue_empty.set(false);
+    }
+
+    /// Schedules a new task to the event-loop.
+    pub fn spawn<F>(&self, work: F) -> TaskHandle
+    where
+        F: FnOnce() -> TaskOutput + Send + 'static,
+    {
+        // Since the resource is not yet scheduled in the event-loop, we create a
+        // null ID. The event-loop will update this value with a real ID later.
+        let id = Rc::new(Cell::new(DefaultKey::null()));
+        let work = Box::new(work);
+
+        let (cancel_tx, cancel_rx) = mpsc::channel();
+
+        let mut task = Task {
+            id,
+            on_complete: None,
+            cancel_tx,
+        };
+
+        let handle = task.handle(self.clone());
+        let request = Request::TaskSpawn(task, work, cancel_rx);
+
+        self.request_sender.send(request).unwrap();
+        self.request_queue_empty.set(false);
+
+        handle
+    }
+
+    /// Removes a task from the event-loop.
+    pub(crate) fn cancel_task(&self, id: Shared<ResourceId>) {
+        // Send a cancel request.
+        let request = Request::TaskCancel(id);
 
         self.request_sender.send(request).unwrap();
         self.request_queue_empty.set(false);
