@@ -1,6 +1,10 @@
 use crate::resource::ResourceId;
 use crate::resource::ResourceMap;
 use crate::resource::Shared;
+use crate::tasks::Task;
+use crate::tasks::TaskFn;
+use crate::tasks::TaskHandle;
+use crate::tasks::TaskOutput;
 use crate::tcp_listener::TcpListener;
 use crate::tcp_listener::TcpListenerHandle;
 use crate::tcp_stream::OnCloseCallback;
@@ -34,6 +38,7 @@ use std::num::NonZeroUsize;
 use std::rc::Rc;
 use std::sync::mpsc;
 use std::sync::Arc;
+use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
@@ -56,6 +61,8 @@ enum Request {
 enum Event {
     /// A network operation is available.
     Network(TcpEventKind),
+    /// A thread-pool task has been completed.
+    ThreadPool(ResourceId, TaskOutput),
 }
 
 #[derive(Debug)]
@@ -79,7 +86,7 @@ pub struct EventLoop {
     request_sender: Rc<mpsc::Sender<Request>>,
     thread_pool: ThreadPool,
     event_queue: mpsc::Receiver<Event>,
-    event_sender: mpsc::Sender<Event>,
+    event_sender: Arc<Mutex<mpsc::Sender<Event>>>,
     registry: Registry,
     poll: Poll,
     waker: Arc<Waker>,
@@ -90,11 +97,14 @@ impl EventLoop {
     pub fn new(num_threads: usize) -> EventLoop {
         // Number of threads should always be a positive non-zero number.
         assert!(num_threads > 0);
-
         let thread_pool = ThreadPool::new(num_threads);
 
         let (request_sender, request_queue) = mpsc::channel();
         let (event_sender, event_queue) = mpsc::channel();
+
+        // Wrap the sender part of the channel so it can be safely shared
+        // across the workers of the thread-pool.
+        let event_sender = Arc::new(Mutex::new(event_sender));
 
         // Initialize the kernel notification multiplexer.
         let poll = Poll::new().unwrap();
@@ -197,6 +207,10 @@ impl EventLoop {
             };
         }
 
+        // We will aquire the lock here and hold it until we process all
+        // the available network events.
+        let sender_lock = self.event_sender.lock().unwrap();
+
         for event in &events {
             // Note: Token(0) is a special token signaling that someone woke us up.
             if event.token() == Token(0) {
@@ -213,12 +227,15 @@ impl EventLoop {
                 _ => continue,
             };
 
-            self.event_sender.send(Event::Network(event_type)).unwrap();
+            sender_lock.send(Event::Network(event_type)).unwrap();
         }
+
+        drop(sender_lock);
 
         while let Ok(event) = self.event_queue.try_recv() {
             match event {
                 Event::Network(event) => self.process_network_event(event),
+                Event::ThreadPool(id, output) => self.process_finished_task(id, output),
             }
 
             // Since each event might schedule additional I/O we need to process
@@ -260,7 +277,20 @@ impl EventLoop {
         self.request_queue_empty.set(true);
     }
 
-    // Processes any ready network events from MIO.
+    /// Processes a finished task from the event-loop.
+    fn process_finished_task(&mut self, id: ResourceId, output: TaskOutput) {
+        // If we receive a task ID that doesn't exist as a resource,
+        // it means the task has already been canceled.
+        let handle = self.handle();
+        let task = match self.resources.get_mut_as::<Task>(id) {
+            Some(task) => task,
+            None => return,
+        };
+
+        task.run_callback(output, handle);
+    }
+
+    /// Processes any ready network events from MIO.
     fn process_network_event(&mut self, event: TcpEventKind) {
         // Due to borrowing constraints down the line, we need to acquire
         // a loop handle at this point.
@@ -332,6 +362,39 @@ impl EventLoop {
         // in the timer collection. When processing expired timers, canceled
         // ones are simply ignored.
         self.resources.remove(id.get());
+    }
+
+    /// Schedules a new task for execution to the event-loop.
+    fn task_spawn(&mut self, task: Task, task_fn: TaskFn, cancel_rx: mpsc::Receiver<()>) {
+        // The reason we insert the stream to the map and then we get a reference
+        // is so we can create a token with the correct resource ID.
+        let id_slot = task.id.clone();
+        let id = self.resources.insert(Box::new(task));
+
+        id_slot.set(id);
+
+        let event_sender = self.event_sender.clone();
+        let waker = self.waker.clone();
+
+        self.thread_pool.spawn(
+            move || {
+                let output = task_fn();
+                let event = Event::ThreadPool(id, output);
+                let event_sender = event_sender.lock().unwrap();
+
+                event_sender.send(event).unwrap();
+                waker.wake().unwrap();
+            },
+            cancel_rx,
+        );
+    }
+
+    /// Removes a previously queued task.
+    fn task_cancel(&mut self, handle: TaskHandle) {
+        // We only need to remove the resource from the map. If a task is already
+        // running in the thread pool, its result will be discarded when
+        // finished tasks are processed.
+        self.resources.remove(handle.id.get());
     }
 
     /// Initializes a new tcp connection.

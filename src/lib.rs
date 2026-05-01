@@ -1,5 +1,6 @@
 pub mod event_loop;
 pub mod resource;
+pub mod tasks;
 pub mod tcp_listener;
 pub mod tcp_stream;
 pub mod thread_pool;
