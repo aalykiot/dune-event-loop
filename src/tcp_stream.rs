@@ -16,6 +16,7 @@ use std::io::Read;
 use std::io::Write;
 use std::net::Shutdown;
 use std::net::SocketAddr;
+use std::rc::Rc;
 
 pub type OnConnectionCallback = Box<dyn FnMut(Result<TcpStreamHandle>) + 'static>;
 pub type OnReadCallback = Box<dyn FnMut(TcpStreamHandle, Result<Vec<u8>>) + 'static>;
@@ -63,9 +64,10 @@ impl Resource for TcpStream {
 impl TcpStream {
     /// Returns a handle to the tcp stream resource.
     pub fn handle(&self, handle: LoopHandle) -> TcpStreamHandle {
+        let socket_info = Rc::new(self.get_socket_info());
         TcpStreamHandle {
             id: self.id.clone(),
-            info: self.get_socket_info(),
+            info: socket_info,
             handle,
         }
     }
@@ -127,7 +129,7 @@ impl TcpStream {
 
         let tcp_handle = TcpStreamHandle {
             id: self.id.clone(),
-            info: socket_info,
+            info: Rc::new(socket_info),
             handle: handle.clone(),
         };
 
@@ -161,7 +163,7 @@ impl TcpStream {
         // Create a handle to the resource.
         let tcp_handle = TcpStreamHandle {
             id: self.id.clone(),
-            info: self.get_socket_info(),
+            info: Rc::new(self.get_socket_info()),
             handle: handle.clone(),
         };
 
@@ -237,11 +239,11 @@ impl TcpStream {
     }
 
     /// Returns information about the connected socket.
-    pub fn get_socket_info(&self) -> SocketInfo {
-        SocketInfo {
-            host: self.socket.local_addr().unwrap(),
-            remote: self.socket.peer_addr().unwrap(),
-        }
+    pub fn get_socket_info(&self) -> Result<SocketInfo> {
+        Ok(SocketInfo {
+            host: self.socket.local_addr()?,
+            remote: self.socket.peer_addr()?,
+        })
     }
 
     /// Returns a token linked to the underline socket.
@@ -256,7 +258,7 @@ pub struct TcpStreamHandle {
     /// A shared pointer to the resource ID of the connection.
     pub(crate) id: Shared<ResourceId>,
     /// Information about the connected socket.
-    pub info: SocketInfo,
+    pub info: Rc<Result<SocketInfo>>,
     /// A handle to the event-loop.
     handle: LoopHandle,
 }
