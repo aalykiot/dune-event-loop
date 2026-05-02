@@ -5,23 +5,23 @@ use crate::resource::Shared;
 use anyhow::Result;
 use std::sync::mpsc;
 
-pub type TaskOutput = Option<Result<Vec<u8>>>;
+pub type Output = Option<Result<Vec<u8>>>;
 
-pub type TaskFn = Box<dyn FnOnce() -> TaskOutput + Send>;
-pub type TaskCallback = Box<dyn FnMut(LoopHandle, TaskOutput) + 'static>;
+pub type WorkFn = Box<dyn FnOnce() -> Output + Send>;
+pub type OnCompleteCallback = Box<dyn FnMut(LoopHandle, Output) + 'static>;
 
 /// The data required for a task resource.
 pub(crate) struct Task {
     pub id: Shared<ResourceId>,
-    pub on_complete: Option<TaskCallback>,
+    pub on_complete: Option<OnCompleteCallback>,
     pub cancel_tx: mpsc::Sender<()>,
 }
 
 impl Task {
     /// Runs the callback of the task.
-    pub fn run_callback(&mut self, result: TaskOutput, handle: LoopHandle) {
+    pub fn run_callback(&mut self, output: Output, handle: LoopHandle) {
         if let Some(mut callback) = self.on_complete.take() {
-            callback(handle, result);
+            callback(handle, output);
         }
     }
 

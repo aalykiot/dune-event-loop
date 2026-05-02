@@ -1,10 +1,10 @@
 use crate::resource::ResourceId;
 use crate::resource::ResourceMap;
 use crate::resource::Shared;
-use crate::tasks::Task;
-use crate::tasks::TaskFn;
-use crate::tasks::TaskHandle;
-use crate::tasks::TaskOutput;
+use crate::task::Output as TaskOutput;
+use crate::task::Task;
+use crate::task::TaskHandle;
+use crate::task::WorkFn;
 use crate::tcp_listener::TcpListener;
 use crate::tcp_listener::TcpListenerHandle;
 use crate::tcp_stream::OnCloseCallback;
@@ -55,7 +55,7 @@ enum Request {
     TcpClose(Shared<ResourceId>, OnCloseCallback),
     TcpListen(TcpListener),
     TcpListenStop(Shared<ResourceId>, OnCloseCallback),
-    TaskSpawn(Task, TaskFn, mpsc::Receiver<()>),
+    TaskSpawn(Task, WorkFn, mpsc::Receiver<()>),
     TaskCancel(Shared<ResourceId>),
 }
 
@@ -281,17 +281,16 @@ impl EventLoop {
         self.request_queue_empty.set(true);
     }
 
-    /// Processes a finished task from the event-loop.
+    /// Processes a finished task from the thread-pool.
     fn process_finished_task(&mut self, id: ResourceId, output: TaskOutput) {
         // If we receive a task ID that doesn't exist as a resource,
         // it means the task has already been canceled.
         let handle = self.handle();
-        let task = match self.resources.get_mut_as::<Task>(id) {
-            Some(task) => task,
-            None => return,
-        };
 
-        task.run_callback(output, handle);
+        if let Some(mut resource) = self.resources.remove(id) {
+            let task = resource.downcast_mut::<Task>().unwrap();
+            task.run_callback(output, handle);
+        }
     }
 
     /// Processes any ready network events from MIO.
@@ -369,7 +368,7 @@ impl EventLoop {
     }
 
     /// Schedules a new task for execution to the event-loop.
-    fn task_spawn(&mut self, task: Task, task_fn: TaskFn, cancel_rx: mpsc::Receiver<()>) {
+    fn task_spawn(&mut self, task: Task, work: WorkFn, cancel_rx: mpsc::Receiver<()>) {
         // The reason we insert the stream to the map and then we get a reference
         // is so we can create a token with the correct resource ID.
         let id_slot = task.id.clone();
@@ -382,7 +381,7 @@ impl EventLoop {
 
         self.thread_pool.spawn(
             move || {
-                let output = task_fn();
+                let output = work();
                 let event = Event::ThreadPool(id, output);
                 let event_sender = event_sender.lock().unwrap();
 
@@ -591,6 +590,35 @@ impl LoopHandle {
         let mut task = Task {
             id,
             on_complete: None,
+            cancel_tx,
+        };
+
+        let handle = task.handle(self.clone());
+        let request = Request::TaskSpawn(task, work, cancel_rx);
+
+        self.request_sender.send(request).unwrap();
+        self.request_queue_empty.set(false);
+
+        handle
+    }
+
+    /// Schedules a new task with a callback to the event-loop.
+    pub fn spawn_with_callback<F, U>(&self, work: F, callback: U) -> TaskHandle
+    where
+        F: FnOnce() -> TaskOutput + Send + 'static,
+        U: FnMut(LoopHandle, TaskOutput) + 'static,
+    {
+        // Since the resource is not yet scheduled in the event-loop, we create a
+        // null ID. The event-loop will update this value with a real ID later.
+        let id = Rc::new(Cell::new(DefaultKey::null()));
+        let work = Box::new(work);
+        let on_complete = Box::new(callback);
+
+        let (cancel_tx, cancel_rx) = mpsc::channel();
+
+        let mut task = Task {
+            id,
+            on_complete: Some(on_complete),
             cancel_tx,
         };
 
