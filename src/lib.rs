@@ -1,3 +1,4 @@
+pub mod check;
 pub mod event_loop;
 pub mod resource;
 pub mod task;

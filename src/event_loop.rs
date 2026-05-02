@@ -1,3 +1,4 @@
+use crate::check::Check;
 use crate::resource::ResourceId;
 use crate::resource::ResourceMap;
 use crate::resource::Shared;
@@ -58,6 +59,8 @@ enum Request {
     TcpListenStop(Shared<ResourceId>, OnCloseCallback),
     TaskSpawn(Task, WorkFn, mpsc::Receiver<()>),
     TaskCancel(Shared<ResourceId>),
+    CheckInit(Check),
+    CheckRemove(Shared<ResourceId>),
 }
 
 #[allow(dead_code)]
@@ -277,6 +280,8 @@ impl EventLoop {
                 Request::TcpListenStop(id, callback) => self.tcp_listener_stop(id, callback),
                 Request::TaskSpawn(task, work, cancel_rx) => self.task_spawn(task, work, cancel_rx),
                 Request::TaskCancel(id) => self.task_cancel(id),
+                Request::CheckInit(check) => self.check_init(check),
+                Request::CheckRemove(id) => self.check_remove(id),
             }
         }
         self.request_queue_empty.set(true);
@@ -506,6 +511,29 @@ impl EventLoop {
             resource.destroy(handle.clone());
             callback(handle);
         }
+    }
+
+    /// Initializes a check resources to the event-loop.
+    fn check_init(&mut self, check: Check) {
+        // The reason we insert the stream to the map and then we get a reference
+        // is so we can create a token with the correct resource ID.
+        let id_slot = check.id.clone();
+        let id = self.resources.insert(Box::new(check));
+
+        id_slot.set(id);
+
+        self.check_queue.push(id);
+    }
+
+    /// Removes a check resource from the event-loop.
+    fn check_remove(&mut self, id: Shared<ResourceId>) {
+        // TODO: Using retain is not very performant since we're checking every
+        // element in the vector. In the future it's best to come up with
+        // a better solution.
+        let id = id.get();
+
+        self.resources.remove(id);
+        self.check_queue.retain(|i| *i != id);
     }
 
     /// Returns true if there is pending work still ongoing.
