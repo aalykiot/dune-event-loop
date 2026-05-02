@@ -162,7 +162,7 @@ impl EventLoop {
             RunMode::NoWait => Some(Duration::ZERO),
             _ if !self.has_pending_events() => Some(Duration::ZERO),
             _ => {
-                let refs = self.check_queue.len() + self.check_queue.len();
+                let refs = self.check_queue.len() + self.close_queue.len();
                 match self.timers.next() {
                     _ if refs > 0 => Some(Duration::ZERO),
                     Some((t, _)) => Some(*t - self.current_time),
