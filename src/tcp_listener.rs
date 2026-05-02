@@ -5,6 +5,7 @@ use crate::resource::Shared;
 use crate::tcp_stream::OnCloseCallback;
 use crate::tcp_stream::TcpStream;
 use crate::tcp_stream::TcpStreamHandle;
+use crate::tcp_stream::READ_BUFFER_SIZE;
 use anyhow::Result;
 use mio::net::TcpListener as MioListener;
 use mio::Token;
@@ -64,6 +65,7 @@ impl TcpListener {
             let stream = TcpStream {
                 id,
                 socket,
+                read_buffer: [0; READ_BUFFER_SIZE],
                 on_connection: None,
                 on_read: None,
                 on_close: None,

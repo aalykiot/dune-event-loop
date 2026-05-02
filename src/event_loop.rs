@@ -13,6 +13,7 @@ use crate::tcp_stream::OnWriteCallback;
 use crate::tcp_stream::TcpEventKind;
 use crate::tcp_stream::TcpStream;
 use crate::tcp_stream::TcpStreamHandle;
+use crate::tcp_stream::READ_BUFFER_SIZE;
 use crate::thread_pool::ThreadPool;
 use crate::timers::Timer;
 use crate::timers::TimerHandle;
@@ -654,6 +655,7 @@ impl LoopHandle {
         let stream = TcpStream {
             id,
             socket: MioSocket::connect(address)?,
+            read_buffer: [0; READ_BUFFER_SIZE],
             on_connection: Some(callback),
             on_read: None,
             on_close: None,

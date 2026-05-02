@@ -18,6 +18,8 @@ use std::net::Shutdown;
 use std::net::SocketAddr;
 use std::rc::Rc;
 
+pub const READ_BUFFER_SIZE: usize = 4096;
+
 pub type OnConnectionCallback = Box<dyn FnMut(Result<TcpStreamHandle>) + 'static>;
 pub type OnReadCallback = Box<dyn FnMut(TcpStreamHandle, Result<Vec<u8>>) + 'static>;
 pub type OnWriteCallback = Box<dyn FnMut(TcpStreamHandle, Result<usize>) + 'static>;
@@ -43,6 +45,7 @@ pub(crate) enum TcpEventKind {
 pub(crate) struct TcpStream {
     pub id: Shared<ResourceId>,
     pub socket: MioSocket,
+    pub read_buffer: [u8; READ_BUFFER_SIZE],
     pub on_connection: Option<OnConnectionCallback>,
     pub on_read: Option<OnReadCallback>,
     pub on_close: Option<OnCloseCallback>,
@@ -85,10 +88,7 @@ impl TcpStream {
         registry: &mut Registry,
         close_queue: &mut BasicQueue,
     ) {
-        // Create buffers for reading data.
-        let mut data = vec![];
-        let mut data_buf = [0; 4096];
-
+        let mut bytes_read = 0;
         let socket_info = self.get_socket_info();
 
         // This will help us catch errors and FIN packets.
@@ -97,14 +97,14 @@ impl TcpStream {
 
         // We can probably read from the socket connection.
         loop {
-            match self.socket.read(&mut data_buf) {
+            match self.socket.read(&mut self.read_buffer) {
                 // Reading 0 bytes means the other side has closed the
                 // connection or is done writing.
                 Ok(0) => {
                     is_eof = true;
                     break;
                 }
-                Ok(n) => data.extend_from_slice(&data_buf[..n]),
+                Ok(n) => bytes_read = n,
                 // Would block "errors" are the OS's way of saying that the connection
                 // is not actually ready to perform this I/O operation.
                 Err(e) if e.kind() == io::ErrorKind::WouldBlock => break,
@@ -139,11 +139,13 @@ impl TcpStream {
             return;
         }
 
+        let data = self.read_buffer[..bytes_read].to_vec();
+
         match data.len() {
             // FIN packet.
-            0 => (on_read)(tcp_handle, Ok(data)),
+            0 => on_read(tcp_handle, Ok(data)),
             // We read some bytes.
-            _ if !is_eof => (on_read)(tcp_handle, Ok(data)),
+            _ if !is_eof => on_read(tcp_handle, Ok(data)),
             // FIN packet is included to the bytes we read.
             _ => {
                 on_read(tcp_handle.clone(), Ok(data));
