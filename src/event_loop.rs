@@ -56,7 +56,7 @@ enum Request {
     TcpRead(Shared<ResourceId>, OnReadCallback),
     TcpShutdown(Shared<ResourceId>, OnCloseCallback),
     TcpClose(Shared<ResourceId>, OnCloseCallback),
-    TcpListen(TcpListener),
+    TcpListen(Box<TcpListener>),
     TcpListenStop(Shared<ResourceId>, OnCloseCallback),
     TaskSpawn(Task, WorkFn, mpsc::Receiver<()>),
     TaskCancel(Shared<ResourceId>),
@@ -453,11 +453,11 @@ impl EventLoop {
     }
 
     /// Initializes a new tcp listener.
-    fn tcp_listener_init(&mut self, listener: TcpListener) {
+    fn tcp_listener_init(&mut self, listener: Box<TcpListener>) {
         // The reason we insert the stream to the map and then we get a reference
         // is so we can create a token with the correct resource ID.
         let id_slot = listener.id.clone();
-        let id = self.resources.insert(Box::new(listener));
+        let id = self.resources.insert(listener);
 
         id_slot.set(id);
 
@@ -731,12 +731,12 @@ impl LoopHandle {
 
         // Bind address to the socket.
         let socket = MioListener::bind(address)?;
-        let listener = TcpListener {
+        let listener = Box::new(TcpListener {
             id,
             socket,
             on_connection,
             on_close: None,
-        };
+        });
 
         self.request_sender
             .send(Request::TcpListen(listener))
