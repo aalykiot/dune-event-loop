@@ -1,4 +1,5 @@
 use crate::check::Check;
+use crate::check::CheckHandle;
 use crate::resource::ResourceId;
 use crate::resource::ResourceMap;
 use crate::resource::Shared;
@@ -50,7 +51,7 @@ pub(crate) type BasicQueue = Vec<ResourceId>;
 enum Request {
     TimerStart(Timer),
     TimerCancel(Shared<ResourceId>),
-    TcpInit(TcpStream),
+    TcpInit(Box<TcpStream>),
     TcpWrite(Shared<ResourceId>, Vec<u8>, OnWriteCallback),
     TcpRead(Shared<ResourceId>, OnReadCallback),
     TcpShutdown(Shared<ResourceId>, OnCloseCallback),
@@ -143,11 +144,12 @@ impl EventLoop {
             self.current_time = Instant::now();
             self.process_requests();
             self.run_timers();
-
             // Based on the run_mode and what resources the event-loop is currently
             // running, we will calculate the timout of the poll phase.
             let timeout = self.poll_timeout(&mode);
+
             self.run_poll(timeout);
+            self.run_check_callbacks();
             self.run_close();
 
             // Check if we need to exit, or continue the loop.
@@ -248,6 +250,27 @@ impl EventLoop {
             // the requests queue in every iteration.
             self.process_requests();
         }
+    }
+
+    /// Runs all check callbacks for this loop iteration.
+    fn run_check_callbacks(&mut self) {
+        // Due to Rust's ownership model we need to create a loop handle
+        // here and re-use it when necessery.
+        let handle = self.handle();
+
+        for id in self.check_queue.iter() {
+            // Get the resource from the collection.
+            let check = match self.resources.get_mut_as::<Check>(*id) {
+                Some(check) => check,
+                None => continue,
+            };
+
+            check.run_callback(handle.clone());
+        }
+
+        // At this point we need to process the request queue in case
+        // a check callback scheduled new resources.
+        self.process_requests();
     }
 
     /// Runs any clean-up actions on "dying" resources.
@@ -407,11 +430,11 @@ impl EventLoop {
     }
 
     /// Initializes a new tcp connection.
-    fn tcp_stream_init(&mut self, stream: TcpStream) {
+    fn tcp_stream_init(&mut self, stream: Box<TcpStream>) {
         // The reason we insert the stream to the map and then we get a reference
         // is so we can create a token with the correct resource ID.
         let id_slot = stream.id.clone();
-        let id = self.resources.insert(Box::new(stream));
+        let id = self.resources.insert(stream);
 
         id_slot.set(id);
 
@@ -680,7 +703,7 @@ impl LoopHandle {
         let callback = Box::new(callback);
 
         // Connect to the remote host.
-        let stream = TcpStream {
+        let stream = Box::new(TcpStream {
             id,
             socket: MioSocket::connect(address)?,
             read_buffer: [0; READ_BUFFER_SIZE],
@@ -688,7 +711,7 @@ impl LoopHandle {
             on_read: None,
             on_close: None,
             write_queue: VecDeque::new(),
-        };
+        });
 
         self.request_sender.send(Request::TcpInit(stream)).unwrap();
         self.request_queue_empty.set(false);
@@ -773,6 +796,37 @@ impl LoopHandle {
         F: FnMut(LoopHandle) + 'static,
     {
         let request = Request::TcpListenStop(id, Box::new(callback));
+
+        self.request_sender.send(request).unwrap();
+        self.request_queue_empty.set(false);
+    }
+
+    /// Initializes a new check callback to the event-loop. Check resources will run the
+    /// given callback once per loop iteration, right after polling for I/O.
+    pub fn check<F>(&self, callback: F) -> CheckHandle
+    where
+        F: FnMut(CheckHandle) + 'static,
+    {
+        // Since the resource is not yet scheduled in the event-loop, we create a
+        // null ID. The event-loop will update this value with a real ID later.
+        let id = Rc::new(Cell::new(DefaultKey::null()));
+        let callback = Box::new(callback);
+
+        let check = Check { id, callback };
+        let handle = check.handle(self.clone());
+
+        let request = Request::CheckInit(check);
+
+        self.request_sender.send(request).unwrap();
+        self.request_queue_empty.set(false);
+
+        handle
+    }
+
+    /// Removes a check resources from the event-loop.
+    pub(crate) fn check_remove(&self, id: Shared<ResourceId>) {
+        // Send a remove request.
+        let request = Request::CheckRemove(id);
 
         self.request_sender.send(request).unwrap();
         self.request_queue_empty.set(false);

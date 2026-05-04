@@ -40,9 +40,9 @@ pub struct CheckHandle {
 }
 
 impl CheckHandle {
-    /// Stop the handle, the callback will no longer be called.
+    /// The check callback will no longer be called.
     pub fn remove(self) {
-        todo!()
+        self.handle.check_remove(self.id.clone());
     }
 
     /// Returns a handle to the event-loop.
