@@ -2,6 +2,8 @@ use crate::check::Check;
 use crate::check::CheckHandle;
 use crate::fs_event::FileChangeEvent;
 use crate::fs_event::FsEvent;
+use crate::fs_event::FsEventHandle;
+use crate::fs_event::WatchMode;
 use crate::resource::ResourceId;
 use crate::resource::ResourceMap;
 use crate::resource::Shared;
@@ -40,6 +42,7 @@ use std::collections::VecDeque;
 use std::io;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
+use std::path::Path;
 use std::rc::Rc;
 use std::sync::mpsc;
 use std::sync::Arc;
@@ -69,7 +72,7 @@ enum Request {
 }
 
 #[allow(dead_code)]
-pub enum Event {
+pub(crate) enum Event {
     /// A network operation is available.
     Network(TcpEventKind),
     /// A thread-pool task has been completed.
@@ -858,6 +861,51 @@ impl LoopHandle {
     pub(crate) fn check_remove(&self, id: Shared<ResourceId>) {
         // Send a remove request.
         let request = Request::CheckRemove(id);
+
+        self.request_sender.send(request).unwrap();
+        self.request_queue_empty.set(false);
+    }
+
+    /// Creates a watcher that monitors the specified path for changes.
+    pub fn fs_event_start<P, F>(
+        &self,
+        path: P,
+        mode: WatchMode,
+        callback: F,
+    ) -> Result<FsEventHandle>
+    where
+        F: FnMut(FsEventHandle, FileChangeEvent) + 'static,
+        P: AsRef<Path>,
+    {
+        // Since the resource is not yet scheduled in the event-loop, we create a
+        // null ID. The event-loop will update this value with a real ID later.
+        let id = Rc::new(Cell::new(DefaultKey::null()));
+        let callback = Box::new(callback);
+
+        // Check if path exists.
+        std::fs::metadata(path.as_ref())?;
+
+        let fs_event = FsEvent {
+            id,
+            path: path.as_ref().to_path_buf(),
+            callback,
+            mode,
+            watcher: None,
+        };
+
+        let handle = fs_event.handle(self.clone());
+        let request = Request::FsEventStart(fs_event);
+
+        self.request_sender.send(request).unwrap();
+        self.request_queue_empty.set(false);
+
+        Ok(handle)
+    }
+
+    /// Stops the watcher, the callback will no longer be called.
+    pub(crate) fn fs_event_stop(&self, id: Shared<ResourceId>) {
+        // Send a remove request.
+        let request = Request::FsEventStop(id);
 
         self.request_sender.send(request).unwrap();
         self.request_queue_empty.set(false);

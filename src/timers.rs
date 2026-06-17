@@ -31,7 +31,7 @@ impl TimersCollection {
         let future = self.tree.split_off(&timestamp);
         let expired = std::mem::replace(&mut self.tree, future);
 
-        expired.into_iter().flat_map(|(_, t)| t).collect()
+        expired.into_values().flatten().collect()
     }
 
     /// Returns the next timer to expire in the queue.

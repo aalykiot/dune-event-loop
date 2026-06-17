@@ -16,10 +16,13 @@ use std::sync::Mutex;
 pub type WatchMode = RecursiveMode;
 pub type FileChangeEvent = notify::Event;
 
+pub type FsEventCallback = Box<dyn FnMut(FsEventHandle, FileChangeEvent) + 'static>;
+
 /// The data required for a file-system watcher.
 pub(crate) struct FsEvent {
     pub id: Shared<ResourceId>,
     pub path: PathBuf,
+    pub callback: FsEventCallback,
     pub watcher: Option<RecommendedWatcher>,
     pub mode: WatchMode,
 }
@@ -59,6 +62,13 @@ pub struct FsEventHandle {
     pub(crate) id: Shared<ResourceId>,
     /// A handle to the event-loop.
     handle: LoopHandle,
+}
+
+impl FsEventHandle {
+    /// Stops the watcher, the callback will no longer be called.
+    pub fn stop(self) {
+        self.handle.fs_event_stop(self.id.clone());
+    }
 }
 
 /// An instance that knows how to handle fs events.
