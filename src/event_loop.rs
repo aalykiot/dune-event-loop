@@ -569,7 +569,7 @@ impl EventLoop {
     }
 
     /// Initializes and starts a new file-system watcher.
-    pub fn fs_event_start(&mut self, fs_event: FsEvent) {
+    fn fs_event_start(&mut self, fs_event: FsEvent) {
         // The reason we insert the stream to the map and then we get a reference
         // is so we can create a token with the correct resource ID.
         let id_slot = fs_event.id.clone();
@@ -586,7 +586,7 @@ impl EventLoop {
     }
 
     /// Stops and removes a file-system watcher from the event-loop.
-    pub fn fs_event_stop(&mut self, id: Shared<ResourceId>) {
+    fn fs_event_stop(&mut self, id: Shared<ResourceId>) {
         self.resources.remove(id.get());
     }
 
