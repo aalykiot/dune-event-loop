@@ -21,6 +21,7 @@ use crate::timers::Timer;
 use crate::timers::TimerHandle;
 use crate::timers::TimerKind;
 use crate::timers::TimersCollection;
+use crate::fs_event::FileChangeEvent;
 use anyhow::Result;
 use mio::net::TcpListener as MioListener;
 use mio::net::TcpStream as MioSocket;
@@ -65,11 +66,13 @@ enum Request {
 }
 
 #[allow(dead_code)]
-enum Event {
+pub enum Event {
     /// A network operation is available.
     Network(TcpEventKind),
     /// A thread-pool task has been completed.
     ThreadPool(ResourceId, TaskOutput),
+    /// A file-system change has been detected.
+    Watch(ResourceId, FileChangeEvent),
 }
 
 #[derive(Debug)]

@@ -1,5 +1,6 @@
 pub mod check;
 pub mod event_loop;
+pub mod fs_event;
 pub mod resource;
 pub mod task;
 pub mod tcp_listener;
