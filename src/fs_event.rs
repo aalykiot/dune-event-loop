@@ -7,8 +7,7 @@ use mio::Waker;
 use notify::Config;
 use notify::RecommendedWatcher;
 use notify::RecursiveMode;
-use slotmap::DefaultKey;
-use slotmap::Key;
+use notify::Watcher;
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
@@ -23,24 +22,29 @@ pub(crate) struct FsEvent {
     pub path: PathBuf,
     pub watcher: Option<RecommendedWatcher>,
     pub mode: WatchMode,
-    pub waker: Arc<Waker>,
-    pub event_sender: Arc<Mutex<Sender<Event>>>,
 }
 
 impl FsEvent {
     /// Starts watching for file events in the specified path.
-    pub fn start(&self, handle: LoopHandle) {
+    pub fn watch(&mut self, waker: Arc<Waker>, event_sender: Arc<Mutex<Sender<Event>>>) {
         // Create an appropriate watcher for the current system.
-        let handle = self.handle(handle);
-        let mut watcher = RecommendedWatcher::new(handle, Config::default()).unwrap();
+        let fs_handler = FsNotifyHandler {
+            id: self.id.get(),
+            waker,
+            event_sender,
+        };
+
+        // Start watching requested path(s).
+        let mut watcher = RecommendedWatcher::new(fs_handler, Config::default()).unwrap();
+        watcher.watch(&self.path, self.mode).unwrap();
+
+        self.watcher = Some(watcher);
     }
 
     /// Returns a handle to the fs event resource.
     pub fn handle(&self, handle: LoopHandle) -> FsEventHandle {
         FsEventHandle {
-            // id: Arc::new(Mutex::new(self.id.clone())),
-            waker: self.waker.clone(),
-            event_sender: self.event_sender.clone(),
+            id: self.id.clone(),
             handle,
         }
     }
@@ -55,15 +59,12 @@ pub struct FsEventHandle {
     pub(crate) id: Shared<ResourceId>,
     /// A handle to the event-loop.
     handle: LoopHandle,
-    /// The raw event-loop waker.
-    waker: Arc<Waker>,
-    /// Dispatcher of event-loop events.
-    event_sender: Arc<Mutex<Sender<Event>>>,
 }
 
+/// An instance that knows how to handle fs events.
 struct FsNotifyHandler {
-    /// A shared pointer to the resource ID.
-    id: Arc<Mutex<Shared<ResourceId>>>,
+    /// An actual ID tied to the resource.
+    id: ResourceId,
     /// The raw event-loop waker.
     waker: Arc<Waker>,
     /// Dispatcher of event-loop events.
@@ -74,8 +75,7 @@ impl notify::EventHandler for FsNotifyHandler {
     /// Handles an event.
     fn handle_event(&mut self, event: notify::Result<notify::Event>) {
         // Notify the main thread about this fs event.
-        let rid = self.id.lock().unwrap().get();
-        let event = Event::Watch(rid, event.unwrap());
+        let event = Event::Watch(self.id, event.unwrap());
 
         self.event_sender.lock().unwrap().send(event).unwrap();
         self.waker.wake().unwrap();

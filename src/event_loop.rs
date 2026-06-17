@@ -1,5 +1,7 @@
 use crate::check::Check;
 use crate::check::CheckHandle;
+use crate::fs_event::FileChangeEvent;
+use crate::fs_event::FsEvent;
 use crate::resource::ResourceId;
 use crate::resource::ResourceMap;
 use crate::resource::Shared;
@@ -21,7 +23,6 @@ use crate::timers::Timer;
 use crate::timers::TimerHandle;
 use crate::timers::TimerKind;
 use crate::timers::TimersCollection;
-use crate::fs_event::FileChangeEvent;
 use anyhow::Result;
 use mio::net::TcpListener as MioListener;
 use mio::net::TcpStream as MioSocket;
@@ -63,6 +64,8 @@ enum Request {
     TaskCancel(Shared<ResourceId>),
     CheckInit(Check),
     CheckRemove(Shared<ResourceId>),
+    FsEventStart(FsEvent),
+    FsEventStop(Shared<ResourceId>),
 }
 
 #[allow(dead_code)]
@@ -247,6 +250,7 @@ impl EventLoop {
             match event {
                 Event::Network(event) => self.process_network_event(event),
                 Event::ThreadPool(id, output) => self.process_finished_task(id, output),
+                Event::Watch(_, _) => todo!(),
             }
 
             // Since each event might schedule additional I/O we need to process
@@ -308,6 +312,8 @@ impl EventLoop {
                 Request::TaskCancel(id) => self.task_cancel(id),
                 Request::CheckInit(check) => self.check_init(check),
                 Request::CheckRemove(id) => self.check_remove(id),
+                Request::FsEventStart(fs_event) => self.fs_event_start(fs_event),
+                Request::FsEventStop(id) => self.fs_event_stop(id),
             }
         }
         self.request_queue_empty.set(true);
@@ -560,6 +566,28 @@ impl EventLoop {
 
         self.resources.remove(id);
         self.check_queue.retain(|i| *i != id);
+    }
+
+    /// Initializes and starts a new file-system watcher.
+    pub fn fs_event_start(&mut self, fs_event: FsEvent) {
+        // The reason we insert the stream to the map and then we get a reference
+        // is so we can create a token with the correct resource ID.
+        let id_slot = fs_event.id.clone();
+        let id = self.resources.insert(Box::new(fs_event));
+
+        id_slot.set(id);
+
+        // Note: We obtain a reference to the newly inserted fs_event before starting
+        // the watcher because the watcher requires a valid resource ID, which is
+        // only assigned once the fs_event has been inserted.
+        let fs_event = self.resources.get_mut_as::<FsEvent>(id).unwrap();
+
+        fs_event.watch(self.waker.clone(), self.event_sender.clone());
+    }
+
+    /// Stops and removes a file-system watcher from the event-loop.
+    pub fn fs_event_stop(&mut self, id: Shared<ResourceId>) {
+        self.resources.remove(id.get());
     }
 
     /// Returns true if there is pending work still ongoing.
