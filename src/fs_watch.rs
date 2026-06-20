@@ -11,7 +11,6 @@ use notify::Watcher;
 use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
-use std::sync::Mutex;
 
 pub type FsEvent = notify::Event;
 pub type WatchMode = RecursiveMode;
@@ -29,7 +28,7 @@ pub(crate) struct FsWatcher {
 
 impl FsWatcher {
     /// Starts watching for file events in the specified path.
-    pub fn watch(&mut self, waker: Arc<Waker>, event_sender: Arc<Mutex<Sender<Event>>>) {
+    pub fn watch(&mut self, waker: Arc<Waker>, event_sender: Sender<Event>) {
         // Create an appropriate watcher for the current system.
         let fs_handler = FsNotifyHandler {
             id: self.id.get(),
@@ -92,7 +91,7 @@ struct FsNotifyHandler {
     /// The raw event-loop waker.
     waker: Arc<Waker>,
     /// Dispatcher of event-loop events.
-    event_sender: Arc<Mutex<Sender<Event>>>,
+    event_sender: Sender<Event>,
 }
 
 impl notify::EventHandler for FsNotifyHandler {
@@ -101,7 +100,7 @@ impl notify::EventHandler for FsNotifyHandler {
         // Notify the main thread about this fs event.
         let event = Event::FsWatch(self.id, event.unwrap());
 
-        self.event_sender.lock().unwrap().send(event).unwrap();
+        self.event_sender.send(event).unwrap();
         self.waker.wake().unwrap();
     }
 }

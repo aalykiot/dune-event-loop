@@ -46,7 +46,6 @@ use std::path::Path;
 use std::rc::Rc;
 use std::sync::mpsc;
 use std::sync::Arc;
-use std::sync::Mutex;
 use std::thread;
 use std::time::Duration;
 use std::time::Instant;
@@ -102,7 +101,7 @@ pub struct EventLoop {
     request_sender: Rc<mpsc::Sender<Request>>,
     thread_pool: ThreadPool,
     event_queue: mpsc::Receiver<Event>,
-    event_sender: Arc<Mutex<mpsc::Sender<Event>>>,
+    event_sender: mpsc::Sender<Event>,
     registry: Registry,
     poll: Poll,
     waker: Arc<Waker>,
@@ -117,10 +116,6 @@ impl EventLoop {
 
         let (request_sender, request_queue) = mpsc::channel();
         let (event_sender, event_queue) = mpsc::channel();
-
-        // Wrap the sender part of the channel so it can be safely shared
-        // across the workers of the thread-pool.
-        let event_sender = Arc::new(Mutex::new(event_sender));
 
         // Initialize the kernel notification multiplexer.
         let poll = Poll::new().unwrap();
@@ -226,10 +221,6 @@ impl EventLoop {
             };
         }
 
-        // We will aquire the lock here and hold it until we process all
-        // the available network events.
-        let sender_lock = self.event_sender.lock().unwrap();
-
         for event in &events {
             // Note: Token(0) is a special token signaling that someone woke us up.
             if event.token() == Token(0) {
@@ -246,10 +237,8 @@ impl EventLoop {
                 _ => continue,
             };
 
-            sender_lock.send(Event::Network(event_type)).unwrap();
+            self.event_sender.send(Event::Network(event_type)).unwrap();
         }
-
-        drop(sender_lock);
 
         while let Ok(event) = self.event_queue.try_recv() {
             match event {
@@ -436,7 +425,6 @@ impl EventLoop {
             move || {
                 let output = work();
                 let event = Event::ThreadPool(id, output);
-                let event_sender = event_sender.lock().unwrap();
 
                 event_sender.send(event).unwrap();
                 waker.wake().unwrap();
