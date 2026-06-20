@@ -3,6 +3,7 @@ use crate::event_loop::LoopHandle;
 use crate::resource::Resource;
 use crate::resource::ResourceId;
 use crate::resource::Shared;
+use anyhow::Result;
 use mio::Waker;
 use notify::Config;
 use notify::RecommendedWatcher;
@@ -15,7 +16,7 @@ use std::sync::Arc;
 pub type FsEvent = notify::Event;
 pub type WatchMode = RecursiveMode;
 
-pub type FsWatcherCallback = Box<dyn FnMut(FsWatcherHandle, FsEvent) + 'static>;
+pub type FsWatcherCallback = Box<dyn FnMut(FsWatcherHandle, Result<FsEvent>) + 'static>;
 
 /// The data required for a file-system watcher.
 pub(crate) struct FsWatcher {
@@ -44,7 +45,7 @@ impl FsWatcher {
     }
 
     /// Runs the callback of the file-system watcher.
-    pub fn run_callback(&mut self, handle: LoopHandle, event: FsEvent) {
+    pub fn run_callback(&mut self, handle: LoopHandle, event: Result<FsEvent>) {
         // We need a handle to the resource that we will
         // pass to the callback.
         let handle = self.handle(handle);
@@ -97,8 +98,8 @@ struct FsNotifyHandler {
 impl notify::EventHandler for FsNotifyHandler {
     /// Handles an event.
     fn handle_event(&mut self, event: notify::Result<notify::Event>) {
-        // Notify the main thread about this fs event.
-        let event = Event::FsWatch(self.id, event.unwrap());
+        // Notify the main thread about the fs event.
+        let event = Event::FsWatch(self.id, event.map_err(Into::into));
 
         self.event_sender.send(event).unwrap();
         self.waker.wake().unwrap();

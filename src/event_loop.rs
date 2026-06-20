@@ -77,7 +77,7 @@ pub(crate) enum Event {
     /// A thread-pool task has been completed.
     ThreadPool(ResourceId, TaskOutput),
     /// A file-system change has been detected.
-    FsWatch(ResourceId, FsEvent),
+    FsWatch(ResourceId, Result<FsEvent>),
 }
 
 #[derive(Debug)]
@@ -326,7 +326,7 @@ impl EventLoop {
     }
 
     /// Processes any file-system event that occurred.
-    fn process_fs_event(&mut self, id: ResourceId, event: FsEvent) {
+    fn process_fs_event(&mut self, id: ResourceId, event: Result<FsEvent>) {
         // Get a reference to the resource and run the callback.
         let handle = self.handle();
 
@@ -873,8 +873,8 @@ impl LoopHandle {
     /// Creates a watcher that monitors the specified path for changes.
     pub fn fs_watcher<P, F>(&self, path: P, mode: WatchMode, callback: F) -> Result<FsWatcherHandle>
     where
-        F: FnMut(FsWatcherHandle, FsEvent) + 'static,
         P: AsRef<Path>,
+        F: FnMut(FsWatcherHandle, Result<FsEvent>) + 'static,
     {
         // Since the resource is not yet scheduled in the event-loop, we create a
         // null ID. The event-loop will update this value with a real ID later.

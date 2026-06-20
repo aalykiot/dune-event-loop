@@ -1,5 +1,6 @@
 extern crate dune_event_loop;
 
+use anyhow::Result;
 use dune_event_loop::fs_watch::FsEvent;
 use dune_event_loop::fs_watch::FsWatcherHandle;
 use dune_event_loop::fs_watch::WatchMode;
@@ -16,7 +17,7 @@ fn main() {
     let directory = "./examples/";
     let mode = WatchMode::Recursive;
 
-    let on_event = |_: FsWatcherHandle, event: FsEvent| {
+    let on_event = |_: FsWatcherHandle, event: Result<FsEvent>| {
         println!("{event:?}");
     };
 
