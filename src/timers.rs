@@ -84,7 +84,7 @@ pub struct TimerHandle {
 
 impl TimerHandle {
     /// Cancels the scheduled timer.
-    pub fn cancel(self) {
+    pub fn cancel(&self) {
         // Consume self and call the internal cancle_timer method.
         self.handle.cancel_timer(self.id.clone());
     }

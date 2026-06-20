@@ -1,9 +1,9 @@
 use crate::check::Check;
 use crate::check::CheckHandle;
-use crate::fs_event::FileChangeEvent;
-use crate::fs_event::FsEvent;
-use crate::fs_event::FsEventHandle;
-use crate::fs_event::WatchMode;
+use crate::fs_watch::FileChangeEvent;
+use crate::fs_watch::FsWatcher;
+use crate::fs_watch::FsWatcherHandle;
+use crate::fs_watch::WatchMode;
 use crate::resource::ResourceId;
 use crate::resource::ResourceMap;
 use crate::resource::Shared;
@@ -67,8 +67,8 @@ enum Request {
     TaskCancel(Shared<ResourceId>),
     CheckInit(Check),
     CheckRemove(Shared<ResourceId>),
-    FsEventStart(FsEvent),
-    FsEventStop(Shared<ResourceId>),
+    FsWatcherStart(FsWatcher),
+    FsWatcherStop(Shared<ResourceId>),
 }
 
 #[allow(dead_code)]
@@ -78,7 +78,7 @@ pub(crate) enum Event {
     /// A thread-pool task has been completed.
     ThreadPool(ResourceId, TaskOutput),
     /// A file-system change has been detected.
-    Watch(ResourceId, FileChangeEvent),
+    FsWatch(ResourceId, FileChangeEvent),
 }
 
 #[derive(Debug)]
@@ -209,6 +209,8 @@ impl EventLoop {
                 self.resources.remove(id);
             }
         }
+
+        self.process_requests();
     }
 
     /// Polls for new I/O events (async-tasks, networking, etc).
@@ -253,7 +255,7 @@ impl EventLoop {
             match event {
                 Event::Network(event) => self.process_network_event(event),
                 Event::ThreadPool(id, output) => self.process_finished_task(id, output),
-                Event::Watch(_, _) => todo!(),
+                Event::FsWatch(id, event) => self.process_fs_event(id, event),
             }
 
             // Since each event might schedule additional I/O we need to process
@@ -315,8 +317,8 @@ impl EventLoop {
                 Request::TaskCancel(id) => self.task_cancel(id),
                 Request::CheckInit(check) => self.check_init(check),
                 Request::CheckRemove(id) => self.check_remove(id),
-                Request::FsEventStart(fs_event) => self.fs_event_start(fs_event),
-                Request::FsEventStop(id) => self.fs_event_stop(id),
+                Request::FsWatcherStart(fs_event) => self.fs_watcher_start(fs_event),
+                Request::FsWatcherStop(id) => self.fs_watcher_stop(id),
             }
         }
         self.request_queue_empty.set(true);
@@ -331,6 +333,16 @@ impl EventLoop {
         if let Some(mut resource) = self.resources.remove(id) {
             let task = resource.downcast_mut::<Task>().unwrap();
             task.run_callback(output, handle);
+        }
+    }
+
+    /// Processes any file-system event that occurred.
+    fn process_fs_event(&mut self, id: ResourceId, event: FileChangeEvent) {
+        // Get a reference to the resource and run the callback.
+        let handle = self.handle();
+
+        if let Some(watcher) = self.resources.get_mut_as::<FsWatcher>(id) {
+            watcher.run_callback(handle, event);
         }
     }
 
@@ -572,24 +584,28 @@ impl EventLoop {
     }
 
     /// Initializes and starts a new file-system watcher.
-    fn fs_event_start(&mut self, fs_event: FsEvent) {
+    fn fs_watcher_start(&mut self, fs_watcher: FsWatcher) {
         // The reason we insert the stream to the map and then we get a reference
         // is so we can create a token with the correct resource ID.
-        let id_slot = fs_event.id.clone();
-        let id = self.resources.insert(Box::new(fs_event));
+        let id_slot = fs_watcher.id.clone();
+        let id = self.resources.insert(Box::new(fs_watcher));
 
         id_slot.set(id);
 
-        // Note: We obtain a reference to the newly inserted fs_event before starting
+        // Note: We obtain a reference to the newly inserted fs_watcher before starting
         // the watcher because the watcher requires a valid resource ID, which is
         // only assigned once the fs_event has been inserted.
-        let fs_event = self.resources.get_mut_as::<FsEvent>(id).unwrap();
+        let waker = self.waker.clone();
+        let event_sender = self.event_sender.clone();
 
-        fs_event.watch(self.waker.clone(), self.event_sender.clone());
+        self.resources
+            .get_mut_as::<FsWatcher>(id)
+            .unwrap()
+            .watch(waker, event_sender);
     }
 
     /// Stops and removes a file-system watcher from the event-loop.
-    fn fs_event_stop(&mut self, id: Shared<ResourceId>) {
+    fn fs_watcher_stop(&mut self, id: Shared<ResourceId>) {
         self.resources.remove(id.get());
     }
 
@@ -867,14 +883,14 @@ impl LoopHandle {
     }
 
     /// Creates a watcher that monitors the specified path for changes.
-    pub fn fs_event_start<P, F>(
+    pub fn fs_watcher_start<P, F>(
         &self,
         path: P,
         mode: WatchMode,
         callback: F,
-    ) -> Result<FsEventHandle>
+    ) -> Result<FsWatcherHandle>
     where
-        F: FnMut(FsEventHandle, FileChangeEvent) + 'static,
+        F: FnMut(FsWatcherHandle, FileChangeEvent) + 'static,
         P: AsRef<Path>,
     {
         // Since the resource is not yet scheduled in the event-loop, we create a
@@ -885,7 +901,7 @@ impl LoopHandle {
         // Check if path exists.
         std::fs::metadata(path.as_ref())?;
 
-        let fs_event = FsEvent {
+        let fs_event = FsWatcher {
             id,
             path: path.as_ref().to_path_buf(),
             callback,
@@ -894,7 +910,7 @@ impl LoopHandle {
         };
 
         let handle = fs_event.handle(self.clone());
-        let request = Request::FsEventStart(fs_event);
+        let request = Request::FsWatcherStart(fs_event);
 
         self.request_sender.send(request).unwrap();
         self.request_queue_empty.set(false);
@@ -903,9 +919,9 @@ impl LoopHandle {
     }
 
     /// Stops the watcher, the callback will no longer be called.
-    pub(crate) fn fs_event_stop(&self, id: Shared<ResourceId>) {
+    pub(crate) fn fs_watcher_stop(&self, id: Shared<ResourceId>) {
         // Send a remove request.
-        let request = Request::FsEventStop(id);
+        let request = Request::FsWatcherStop(id);
 
         self.request_sender.send(request).unwrap();
         self.request_queue_empty.set(false);

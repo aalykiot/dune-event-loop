@@ -41,7 +41,7 @@ pub struct CheckHandle {
 
 impl CheckHandle {
     /// The check callback will no longer be called.
-    pub fn remove(self) {
+    pub fn remove(&self) {
         self.handle.check_remove(self.id.clone());
     }
 

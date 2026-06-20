@@ -52,7 +52,7 @@ impl TaskHandle {
     /// Cancels the queued task. This will only succeed if no worker thread
     /// has started processing it yet. Once a worker has picked up the
     /// task for execution, it cannot be stopped.
-    pub fn cancel(self) {
+    pub fn cancel(&self) {
         // Notify for the cancelation and remove the resource.
         let handle = self.handle.clone();
         let _ = self.cancelation.send(());

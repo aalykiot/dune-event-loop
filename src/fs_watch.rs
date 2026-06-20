@@ -16,18 +16,18 @@ use std::sync::Mutex;
 pub type WatchMode = RecursiveMode;
 pub type FileChangeEvent = notify::Event;
 
-pub type FsEventCallback = Box<dyn FnMut(FsEventHandle, FileChangeEvent) + 'static>;
+pub type FsWatcherCallback = Box<dyn FnMut(FsWatcherHandle, FileChangeEvent) + 'static>;
 
 /// The data required for a file-system watcher.
-pub(crate) struct FsEvent {
+pub(crate) struct FsWatcher {
     pub id: Shared<ResourceId>,
     pub path: PathBuf,
-    pub callback: FsEventCallback,
+    pub callback: FsWatcherCallback,
     pub watcher: Option<RecommendedWatcher>,
     pub mode: WatchMode,
 }
 
-impl FsEvent {
+impl FsWatcher {
     /// Starts watching for file events in the specified path.
     pub fn watch(&mut self, waker: Arc<Waker>, event_sender: Arc<Mutex<Sender<Event>>>) {
         // Create an appropriate watcher for the current system.
@@ -44,30 +44,44 @@ impl FsEvent {
         self.watcher = Some(watcher);
     }
 
+    /// Runs the callback of the file-system watcher.
+    pub fn run_callback(&mut self, handle: LoopHandle, event: FileChangeEvent) {
+        // We need a handle to the resource that we will
+        // pass to the callback.
+        let handle = self.handle(handle);
+
+        (self.callback)(handle, event);
+    }
+
     /// Returns a handle to the fs event resource.
-    pub fn handle(&self, handle: LoopHandle) -> FsEventHandle {
-        FsEventHandle {
+    pub fn handle(&self, handle: LoopHandle) -> FsWatcherHandle {
+        FsWatcherHandle {
             id: self.id.clone(),
             handle,
         }
     }
 }
 
-impl Resource for FsEvent {}
+impl Resource for FsWatcher {}
 
-/// A handle to an active fs event resource, watching for file changes.
+/// A handle to resource, watching for file changes.
 #[derive(Clone)]
-pub struct FsEventHandle {
+pub struct FsWatcherHandle {
     /// A shared pointer to the resource ID.
     pub(crate) id: Shared<ResourceId>,
     /// A handle to the event-loop.
     handle: LoopHandle,
 }
 
-impl FsEventHandle {
+impl FsWatcherHandle {
     /// Stops the watcher, the callback will no longer be called.
-    pub fn stop(self) {
-        self.handle.fs_event_stop(self.id.clone());
+    pub fn stop(&self) {
+        self.handle.fs_watcher_stop(self.id.clone());
+    }
+
+    /// Returns a handle to the event-loop.
+    pub fn get_loop(&self) -> LoopHandle {
+        self.handle.clone()
     }
 }
 
@@ -85,7 +99,7 @@ impl notify::EventHandler for FsNotifyHandler {
     /// Handles an event.
     fn handle_event(&mut self, event: notify::Result<notify::Event>) {
         // Notify the main thread about this fs event.
-        let event = Event::Watch(self.id, event.unwrap());
+        let event = Event::FsWatch(self.id, event.unwrap());
 
         self.event_sender.lock().unwrap().send(event).unwrap();
         self.waker.wake().unwrap();
