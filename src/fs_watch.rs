@@ -13,10 +13,10 @@ use std::sync::mpsc::Sender;
 use std::sync::Arc;
 use std::sync::Mutex;
 
+pub type FsEvent = notify::Event;
 pub type WatchMode = RecursiveMode;
-pub type FileChangeEvent = notify::Event;
 
-pub type FsWatcherCallback = Box<dyn FnMut(FsWatcherHandle, FileChangeEvent) + 'static>;
+pub type FsWatcherCallback = Box<dyn FnMut(FsWatcherHandle, FsEvent) + 'static>;
 
 /// The data required for a file-system watcher.
 pub(crate) struct FsWatcher {
@@ -45,7 +45,7 @@ impl FsWatcher {
     }
 
     /// Runs the callback of the file-system watcher.
-    pub fn run_callback(&mut self, handle: LoopHandle, event: FileChangeEvent) {
+    pub fn run_callback(&mut self, handle: LoopHandle, event: FsEvent) {
         // We need a handle to the resource that we will
         // pass to the callback.
         let handle = self.handle(handle);

@@ -1,6 +1,6 @@
 extern crate dune_event_loop;
 
-use dune_event_loop::fs_watch::FileChangeEvent;
+use dune_event_loop::fs_watch::FsEvent;
 use dune_event_loop::fs_watch::FsWatcherHandle;
 use dune_event_loop::fs_watch::WatchMode;
 use dune_event_loop::timers::TimerKind;
@@ -16,16 +16,18 @@ fn main() {
     let directory = "./examples/";
     let mode = WatchMode::Recursive;
 
-    let on_event = |_: FsWatcherHandle, event: FileChangeEvent| {
+    let on_event = |_: FsWatcherHandle, event: FsEvent| {
         println!("{event:?}");
     };
 
     let timeout = Duration::from_secs(10);
-    let watcher = handle.fs_watcher_start(directory, mode, on_event).unwrap();
+    let watcher = handle.fs_watcher(directory, mode, on_event).unwrap();
 
-    handle.timer(timeout, TimerKind::Timeout, move |_: LoopHandle| {
-        watcher.stop()
-    });
+    let on_timeout = move |_: LoopHandle| {
+        watcher.stop();
+    };
+
+    handle.timer(timeout, TimerKind::Timeout, on_timeout);
 
     event_loop.run(RunMode::Default);
 }

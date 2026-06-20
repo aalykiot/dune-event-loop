@@ -1,6 +1,6 @@
 use crate::check::Check;
 use crate::check::CheckHandle;
-use crate::fs_watch::FileChangeEvent;
+use crate::fs_watch::FsEvent;
 use crate::fs_watch::FsWatcher;
 use crate::fs_watch::FsWatcherHandle;
 use crate::fs_watch::WatchMode;
@@ -78,7 +78,7 @@ pub(crate) enum Event {
     /// A thread-pool task has been completed.
     ThreadPool(ResourceId, TaskOutput),
     /// A file-system change has been detected.
-    FsWatch(ResourceId, FileChangeEvent),
+    FsWatch(ResourceId, FsEvent),
 }
 
 #[derive(Debug)]
@@ -337,7 +337,7 @@ impl EventLoop {
     }
 
     /// Processes any file-system event that occurred.
-    fn process_fs_event(&mut self, id: ResourceId, event: FileChangeEvent) {
+    fn process_fs_event(&mut self, id: ResourceId, event: FsEvent) {
         // Get a reference to the resource and run the callback.
         let handle = self.handle();
 
@@ -883,14 +883,9 @@ impl LoopHandle {
     }
 
     /// Creates a watcher that monitors the specified path for changes.
-    pub fn fs_watcher_start<P, F>(
-        &self,
-        path: P,
-        mode: WatchMode,
-        callback: F,
-    ) -> Result<FsWatcherHandle>
+    pub fn fs_watcher<P, F>(&self, path: P, mode: WatchMode, callback: F) -> Result<FsWatcherHandle>
     where
-        F: FnMut(FsWatcherHandle, FileChangeEvent) + 'static,
+        F: FnMut(FsWatcherHandle, FsEvent) + 'static,
         P: AsRef<Path>,
     {
         // Since the resource is not yet scheduled in the event-loop, we create a
