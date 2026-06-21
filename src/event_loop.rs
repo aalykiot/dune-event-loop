@@ -269,7 +269,7 @@ impl EventLoop {
                 Event::Network(event) => self.process_network_event(event),
                 Event::ThreadPool(id, output) => self.process_finished_task(id, output),
                 Event::FsWatch(id, event) => self.process_fs_event(id, event),
-                Event::WinSigInt => todo!(),
+                Event::WinSigInt => self.signals.run_pending(self.handle()),
             }
 
             // Since each event might schedule additional I/O we need to process
@@ -989,7 +989,7 @@ impl LoopHandle {
         Ok(handle)
     }
 
-    /// Stop the handle, the callback will no longer be called.
+    /// The callback will no longer be called.
     pub(crate) fn signal_stop(&self, id: u64) {
         // Send a remove request.
         let request = Request::SignalStop(id);

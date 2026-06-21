@@ -9,6 +9,9 @@ use std::collections::HashMap;
 #[cfg(target_family = "unix")]
 use signal_hook_mio::v1_0::Signals;
 
+#[cfg(target_family = "windows")]
+use std::sync::mpsc;
+
 #[derive(Debug, Clone, Copy)]
 pub enum Lifetime {
     /// Invoked at most once.
@@ -48,13 +51,13 @@ impl From<SignalNum> for i32 {
     }
 }
 
-type SignalHandler = Box<dyn FnMut(SignalHandle, i32) + 'static>;
+type SignalCallback = Box<dyn FnMut(SignalHandle, i32) + 'static>;
 
 pub(crate) struct Signal {
     /// A unique referene.
     pub id: u64,
     /// Callback invoked when the signal is triggered.
-    pub callback: SignalHandler,
+    pub callback: SignalCallback,
     /// Controls how long a callback remains active.
     pub lifetime: Lifetime,
 }
@@ -109,6 +112,21 @@ impl OsSignals {
         }
     }
 
+    #[cfg(target_family = "windows")]
+    fn new(notifier: mpsc::Sender<Event>, waker: Arc<Waker>) -> Self {
+        // Spawn signal watching thread.
+        let on_signal_handler = move || {
+            notifier.send(Event::WinSigInt).unwrap();
+            waker.wake().unwrap();
+        };
+
+        ctrlc::set_handler(on_signal_handler).unwrap();
+
+        OsSignals {
+            handlers: HashMap::new(),
+        }
+    }
+
     #[cfg(target_family = "unix")]
     pub fn run_pending(&mut self, handle: LoopHandle) {
         // Going through the available signals.
@@ -137,6 +155,34 @@ impl OsSignals {
                 }
             });
         }
+    }
+
+    #[cfg(target_family = "windows")]
+    fn run_pending(&mut self, handle: LoopHandle) {
+        // Note: In Windows, a dedicated thread is always on standby to listen for
+        // CTRL+C signals. Consequently, this function may be activated even if a
+        // signal handler was never initiated. Therefore, it's necessary to mimic
+        // the default action when no signals are registered or if the list of
+        // handlers is currently empty.
+        let handlers = match self.handlers.get_mut(&Signal::SIGINT) {
+            Some(handlers) if !handlers.is_empty() => handlers,
+            _ => {
+                emulate_default_handler(Signal::SIGINT).unwrap();
+                return;
+            }
+        };
+
+        handlers.retain_mut(|handler| {
+            // Run handler's callback.
+            let handle = handler.handle(handle.clone());
+            (handler.callback)(handle, signal);
+
+            // Keep the listener if persistent.
+            match handler.lifetime {
+                Lifetime::Oneshot => false,
+                Lifetime::Persistent => true,
+            }
+        });
     }
 
     pub fn remove_handler(&mut self, id: u64) {
