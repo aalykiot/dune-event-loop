@@ -140,6 +140,10 @@ impl EventLoop {
         #[cfg(target_family = "unix")]
         let signals = OsSignals::new(&registry);
 
+        // Monitor system signals through dedicated thread.
+        #[cfg(target_family = "windows")]
+        let signals = OsSignals::new(event_dispatcher.clone(), waker.clone());
+
         EventLoop {
             current_time: Instant::now(),
             resources: ResourceMap::default(),

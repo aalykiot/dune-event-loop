@@ -164,10 +164,10 @@ impl OsSignals {
         // signal handler was never initiated. Therefore, it's necessary to mimic
         // the default action when no signals are registered or if the list of
         // handlers is currently empty.
-        let handlers = match self.handlers.get_mut(&Signal::SIGINT) {
+        let handlers = match self.handlers.get_mut(&SignalKind::SIGINT) {
             Some(handlers) if !handlers.is_empty() => handlers,
             _ => {
-                emulate_default_handler(Signal::SIGINT).unwrap();
+                emulate_default_handler(SignalKind::SIGINT).unwrap();
                 return;
             }
         };
@@ -175,7 +175,7 @@ impl OsSignals {
         handlers.retain_mut(|handler| {
             // Run handler's callback.
             let handle = handler.handle(handle.clone());
-            (handler.callback)(handle, signal);
+            (handler.callback)(handle, SignalKind::SIGINT);
 
             // Keep the listener if persistent.
             match handler.lifetime {
