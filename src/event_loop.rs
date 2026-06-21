@@ -7,6 +7,11 @@ use crate::fs_watch::WatchMode;
 use crate::resource::ResourceId;
 use crate::resource::ResourceMap;
 use crate::resource::Shared;
+use crate::signals::Lifetime;
+use crate::signals::OsSignals;
+use crate::signals::Signal;
+use crate::signals::SignalHandle;
+use crate::signals::SignalNum;
 use crate::task::Output as TaskOutput;
 use crate::task::Task;
 use crate::task::TaskHandle;
@@ -25,6 +30,7 @@ use crate::timers::Timer;
 use crate::timers::TimerHandle;
 use crate::timers::TimerKind;
 use crate::timers::TimersCollection;
+use anyhow::anyhow;
 use anyhow::Result;
 use mio::net::TcpListener as MioListener;
 use mio::net::TcpStream as MioSocket;
@@ -34,6 +40,7 @@ use mio::Poll;
 use mio::Registry;
 use mio::Token;
 use mio::Waker;
+use rand::prelude::*;
 use slotmap::DefaultKey;
 use slotmap::Key;
 use slotmap::KeyData;
@@ -68,6 +75,8 @@ enum Request {
     CheckRemove(Shared<ResourceId>),
     FsWatcherStart(FsWatcher),
     FsWatcherStop(Shared<ResourceId>),
+    SignalStart(SignalNum, Signal),
+    SignalStop(u64),
 }
 
 #[allow(dead_code)]
@@ -78,6 +87,8 @@ pub(crate) enum Event {
     ThreadPool(ResourceId, TaskOutput),
     /// A file-system change has been detected.
     FsWatch(ResourceId, Result<FsEvent>),
+    /// An interrupt signal detected (Windows platform).
+    WinSigInt,
 }
 
 #[derive(Debug)]
@@ -96,6 +107,7 @@ pub struct EventLoop {
     timers: TimersCollection,
     check_queue: BasicQueue,
     close_queue: BasicQueue,
+    signals: OsSignals,
     request_queue: mpsc::Receiver<Request>,
     request_queue_empty: Rc<Cell<bool>>,
     request_sender: Rc<mpsc::Sender<Request>>,
@@ -124,12 +136,17 @@ impl EventLoop {
         let waker = Waker::new(poll.registry(), Token(0)).unwrap();
         let waker = Arc::new(waker);
 
+        // Monitor system signals through MIO.
+        #[cfg(target_family = "unix")]
+        let signals = OsSignals::new(&registry);
+
         EventLoop {
             current_time: Instant::now(),
             resources: ResourceMap::default(),
             timers: TimersCollection::new(),
             check_queue: Vec::new(),
             close_queue: Vec::new(),
+            signals,
             request_queue,
             request_queue_empty: Rc::new(Cell::new(true)),
             request_sender: Rc::new(request_sender),
@@ -227,6 +244,13 @@ impl EventLoop {
                 continue;
             }
 
+            // Note: Token(1) is another special token signaling an OS
+            // signal is available for processing.
+            if event.token() == Token(1) {
+                self.signals.run_pending(self.handle());
+                continue;
+            }
+
             let token = event.token();
             let readable = event.is_readable() || event.is_read_closed();
             let writable = event.is_writable();
@@ -245,6 +269,7 @@ impl EventLoop {
                 Event::Network(event) => self.process_network_event(event),
                 Event::ThreadPool(id, output) => self.process_finished_task(id, output),
                 Event::FsWatch(id, event) => self.process_fs_event(id, event),
+                Event::WinSigInt => todo!(),
             }
 
             // Since each event might schedule additional I/O we need to process
@@ -308,6 +333,8 @@ impl EventLoop {
                 Request::CheckRemove(id) => self.check_remove(id),
                 Request::FsWatcherStart(fs_event) => self.fs_watcher_start(fs_event),
                 Request::FsWatcherStop(id) => self.fs_watcher_stop(id),
+                Request::SignalStart(signum, signal) => self.signal_start(signum, signal),
+                Request::SignalStop(id) => self.signal_stop(id),
             }
         }
         self.request_queue_empty.set(true);
@@ -595,6 +622,29 @@ impl EventLoop {
     /// Stops and removes a file-system watcher from the event-loop.
     fn fs_watcher_stop(&mut self, id: Shared<ResourceId>) {
         self.resources.remove(id.get());
+    }
+
+    /// Subscribes a new signal listener to the event-loop.
+    fn signal_start(&mut self, signum: SignalNum, signal: Signal) {
+        // Check if the specific signal is already being tracked.
+        let signum: i32 = signum.into();
+
+        if let Some(handlers) = self.signals.handlers.get_mut(&signum) {
+            handlers.push(signal);
+            return;
+        }
+
+        #[cfg(target_family = "unix")]
+        {
+            self.signals.sources.add_signal(signum).unwrap();
+        }
+
+        self.signals.handlers.insert(signum, vec![signal]);
+    }
+
+    /// Removes the signal listener from the event-loop.
+    fn signal_stop(&mut self, id: u64) {
+        self.signals.remove_handler(id)
     }
 
     /// Returns true if there is pending work still ongoing.
@@ -905,6 +955,44 @@ impl LoopHandle {
     pub(crate) fn fs_watcher_stop(&self, id: Shared<ResourceId>) {
         // Send a remove request.
         let request = Request::FsWatcherStop(id);
+
+        self.request_sender.send(request).unwrap();
+        self.request_queue_empty.set(false);
+    }
+
+    /// Start the handle with the given callback, watching for the given signal.
+    pub fn signal<F>(&self, signum: i32, lifetime: Lifetime, callback: F) -> Result<SignalHandle>
+    where
+        F: FnMut(SignalHandle, i32) + 'static,
+    {
+        // Parse signal number provided.
+        let signum = SignalNum::try_from(signum).map_err(|e| anyhow!(e))?;
+
+        // Note: Signals are not stored in the resources map since they don't
+        // keep the event-loop alive so, their IDs is a random u64.
+        let mut rng = rand::rng();
+        let id = rng.random::<u64>();
+        let callback = Box::new(callback);
+
+        let signal = Signal {
+            id,
+            callback,
+            lifetime,
+        };
+
+        let handle = signal.handle(self.clone());
+        let request = Request::SignalStart(signum, signal);
+
+        self.request_sender.send(request).unwrap();
+        self.request_queue_empty.set(false);
+
+        Ok(handle)
+    }
+
+    /// Stop the handle, the callback will no longer be called.
+    pub(crate) fn signal_stop(&self, id: u64) {
+        // Send a remove request.
+        let request = Request::SignalStop(id);
 
         self.request_sender.send(request).unwrap();
         self.request_queue_empty.set(false);

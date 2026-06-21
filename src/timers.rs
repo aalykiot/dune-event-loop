@@ -88,4 +88,9 @@ impl TimerHandle {
         // Consume self and call the internal cancle_timer method.
         self.handle.cancel_timer(self.id.clone());
     }
+
+    /// Returns a handle to the event-loop.
+    pub fn get_loop(&self) -> LoopHandle {
+        self.handle.clone()
+    }
 }
