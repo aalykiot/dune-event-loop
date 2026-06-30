@@ -665,6 +665,13 @@ impl EventLoop {
             request_queue_empty: self.request_queue_empty.clone(),
         }
     }
+
+    /// Returns a new interrupt handle to the event-loop (sharable across threads).
+    pub fn interrupt_handle(&self) -> LoopInterruptHandle {
+        LoopInterruptHandle {
+            waker: self.waker.clone(),
+        }
+    }
 }
 
 impl Default for EventLoop {
@@ -1000,5 +1007,17 @@ impl LoopHandle {
 
         self.request_sender.send(request).unwrap();
         self.request_queue_empty.set(false);
+    }
+}
+
+#[derive(Clone)]
+pub struct LoopInterruptHandle {
+    waker: Arc<Waker>,
+}
+
+impl LoopInterruptHandle {
+    // Interrupts the poll phase of the event-loop.
+    pub fn interrupt(&self) {
+        self.waker.wake().unwrap();
     }
 }
