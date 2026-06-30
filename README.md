@@ -1,4 +1,4 @@
-# Crabuv
+# crabuv
 
 This library is a multi-platform support library with a focus on asynchronous I/O. It was primarily developed for use by [Dune](https://github.com/aalykiot/dune), but can be also used in any Rust project.
 
