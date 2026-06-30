@@ -1,6 +1,6 @@
 pub mod check;
 pub mod event_loop;
-pub mod fs_watch;
+pub mod fs;
 pub mod resource;
 pub mod signals;
 pub mod task;

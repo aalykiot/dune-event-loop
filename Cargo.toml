@@ -1,9 +1,9 @@
 [package]
-name = "dune_event_loop"
+name = "crabuv"
 description = "A multi-platform event loop library 🎡"
 authors = ["Alex Alikiotis <alexalikiotis5@gmail.com>"]
 version = "0.1.3"
-repository = "https://gitlab.com/aalykiot/ev_loop"
+repository = "https://gitlab.com/aalykiot/crabuv"
 license = "MIT"
 readme = "README.md"
 edition = "2021"

@@ -1,8 +1,8 @@
-extern crate dune_event_loop;
+extern crate crabuv;
 
-use dune_event_loop::check::CheckHandle;
-use dune_event_loop::EventLoop;
-use dune_event_loop::RunMode;
+use crabuv::check::CheckHandle;
+use crabuv::EventLoop;
+use crabuv::RunMode;
 
 fn main() {
     let mut event_loop = EventLoop::default();

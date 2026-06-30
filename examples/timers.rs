@@ -1,9 +1,9 @@
-extern crate dune_event_loop;
+extern crate crabuv;
 
-use dune_event_loop::timers::TimerKind::Timeout;
-use dune_event_loop::EventLoop;
-use dune_event_loop::LoopHandle;
-use dune_event_loop::RunMode;
+use crabuv::timers::TimerKind::Timeout;
+use crabuv::EventLoop;
+use crabuv::LoopHandle;
+use crabuv::RunMode;
 use std::time::Duration;
 
 fn main() {

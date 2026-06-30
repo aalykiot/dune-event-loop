@@ -1,10 +1,10 @@
-extern crate dune_event_loop;
+extern crate crabuv;
 
 use anyhow::Result;
-use dune_event_loop::tcp_stream::TcpStreamHandle;
-use dune_event_loop::EventLoop;
-use dune_event_loop::LoopHandle;
-use dune_event_loop::RunMode;
+use crabuv::tcp_stream::TcpStreamHandle;
+use crabuv::EventLoop;
+use crabuv::LoopHandle;
+use crabuv::RunMode;
 
 fn main() {
     let address = "188.184.67.127:80".parse().unwrap();

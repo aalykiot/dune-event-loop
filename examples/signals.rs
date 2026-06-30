@@ -1,10 +1,10 @@
-extern crate dune_event_loop;
+extern crate crabuv;
 
-use dune_event_loop::signals::Lifetime::Oneshot;
-use dune_event_loop::signals::SignalHandle;
-use dune_event_loop::signals::SignalKind::SIGINT;
-use dune_event_loop::EventLoop;
-use dune_event_loop::RunMode;
+use crabuv::signals::Lifetime::Oneshot;
+use crabuv::signals::SignalHandle;
+use crabuv::signals::SignalKind::SIGINT;
+use crabuv::EventLoop;
+use crabuv::RunMode;
 use std::cell::Cell;
 
 fn main() {

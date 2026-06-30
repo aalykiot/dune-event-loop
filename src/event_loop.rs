@@ -1,9 +1,9 @@
 use crate::check::Check;
 use crate::check::CheckHandle;
-use crate::fs_watch::FsEvent;
-use crate::fs_watch::FsWatcher;
-use crate::fs_watch::FsWatcherHandle;
-use crate::fs_watch::WatchMode;
+use crate::fs::FsEvent;
+use crate::fs::FsWatcher;
+use crate::fs::FsWatcherHandle;
+use crate::fs::WatchMode;
 use crate::resource::ResourceId;
 use crate::resource::ResourceMap;
 use crate::resource::Shared;

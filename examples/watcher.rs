@@ -1,13 +1,13 @@
-extern crate dune_event_loop;
+extern crate crabuv;
 
 use anyhow::Result;
-use dune_event_loop::fs_watch::FsEvent;
-use dune_event_loop::fs_watch::FsWatcherHandle;
-use dune_event_loop::fs_watch::WatchMode;
-use dune_event_loop::timers::TimerKind;
-use dune_event_loop::EventLoop;
-use dune_event_loop::LoopHandle;
-use dune_event_loop::RunMode;
+use crabuv::fs::FsEvent;
+use crabuv::fs::FsWatcherHandle;
+use crabuv::fs::WatchMode;
+use crabuv::timers::TimerKind;
+use crabuv::EventLoop;
+use crabuv::LoopHandle;
+use crabuv::RunMode;
 use std::time::Duration;
 
 fn main() {
