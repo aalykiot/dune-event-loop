@@ -757,7 +757,7 @@ impl LoopHandle {
     pub fn spawn_with_callback<F, U>(&self, work: F, callback: U) -> TaskHandle
     where
         F: FnOnce() -> TaskOutput + Send + 'static,
-        U: FnMut(LoopHandle, TaskOutput) + 'static,
+        U: FnOnce(LoopHandle, TaskOutput) + 'static,
     {
         // Since the resource is not yet scheduled in the event-loop, we create a
         // null ID. The event-loop will update this value with a real ID later.

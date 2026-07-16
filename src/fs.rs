@@ -13,8 +13,10 @@ use std::path::PathBuf;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
-pub type FsEvent = notify::Event;
 pub type WatchMode = RecursiveMode;
+
+pub type FsEvent = notify::Event;
+pub type FsEventKind = notify::EventKind;
 
 pub type FsWatcherCallback = Box<dyn FnMut(FsWatcherHandle, Result<FsEvent>) + 'static>;
 
