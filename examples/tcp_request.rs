@@ -34,5 +34,6 @@ fn main() {
     };
 
     handle.tcp_connect(address, on_connection).unwrap();
+
     event_loop.run(RunMode::Default);
 }

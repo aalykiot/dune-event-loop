@@ -3,9 +3,11 @@ use crate::resource::Resource;
 use crate::resource::ResourceId;
 use crate::resource::Shared;
 use anyhow::Result;
+use std::any::Any;
 use std::sync::mpsc;
 
-pub type Output = Option<Result<Vec<u8>>>;
+/// The output type for tasks.
+pub type Output = Result<Box<dyn Any + Send>>;
 
 pub type WorkFn = Box<dyn FnOnce() -> Output + Send>;
 pub type OnCompleteCallback = Box<dyn FnOnce(LoopHandle, Output) + 'static>;
