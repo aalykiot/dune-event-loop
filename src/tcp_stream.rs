@@ -267,8 +267,9 @@ pub struct TcpStreamHandle {
 
 impl TcpStreamHandle {
     /// Writes data to the tcp stream.
-    pub fn write<F>(&self, data: Vec<u8>, callback: F)
+    pub fn write<F, D>(&self, data: D, callback: F)
     where
+        D: AsRef<[u8]>,
         F: Fn(TcpStreamHandle, Result<usize>) + 'static,
     {
         // Use the event-loop handle to write.
