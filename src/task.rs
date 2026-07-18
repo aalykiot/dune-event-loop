@@ -59,4 +59,9 @@ impl TaskHandle {
 
         handle.cancel_task(self.id.clone());
     }
+
+    /// Returns a handle to the event-loop.
+    pub fn get_loop(&self) -> LoopHandle {
+        self.handle.clone()
+    }
 }

@@ -67,7 +67,7 @@ impl FsWatcher {
 impl Resource for FsWatcher {}
 
 /// A handle to a file-system watcher resource.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct FsWatcherHandle {
     /// A shared pointer to the resource ID.
     pub(crate) id: Shared<ResourceId>,

@@ -7,11 +7,12 @@ use crate::fs::WatchMode;
 use crate::resource::ResourceId;
 use crate::resource::ResourceMap;
 use crate::resource::Shared;
-use crate::signals::Lifetime;
 use crate::signals::OsSignals;
+use crate::signals::Policy;
+use crate::signals::SigNum;
 use crate::signals::Signal;
 use crate::signals::SignalHandle;
-use crate::signals::SignalNum;
+use crate::task::OnCompleteCallback;
 use crate::task::Output as TaskOutput;
 use crate::task::Task;
 use crate::task::TaskHandle;
@@ -75,7 +76,7 @@ enum Request {
     CheckRemove(Shared<ResourceId>),
     FsWatcherStart(FsWatcher),
     FsWatcherStop(Shared<ResourceId>),
-    SignalStart(SignalNum, Signal),
+    SignalStart(SigNum, Signal),
     SignalStop(u64),
 }
 
@@ -629,7 +630,7 @@ impl EventLoop {
     }
 
     /// Subscribes a new signal listener to the event-loop.
-    fn signal_start(&mut self, signum: SignalNum, signal: Signal) {
+    fn signal_start(&mut self, signum: SigNum, signal: Signal) {
         // Check if the specific signal is already being tracked.
         let signum: i32 = signum.into();
 
@@ -727,34 +728,7 @@ impl LoopHandle {
     }
 
     /// Schedules a new task to the event-loop.
-    pub fn spawn<F>(&self, work: F) -> TaskHandle
-    where
-        F: FnOnce() -> TaskOutput + Send + 'static,
-    {
-        // Since the resource is not yet scheduled in the event-loop, we create a
-        // null ID. The event-loop will update this value with a real ID later.
-        let id = Rc::new(Cell::new(DefaultKey::null()));
-        let work = Box::new(work);
-
-        let (cancel_tx, cancel_rx) = mpsc::channel();
-
-        let mut task = Task {
-            id,
-            on_complete: None,
-            cancel_tx,
-        };
-
-        let handle = task.handle(self.clone());
-        let request = Request::TaskSpawn(task, work, cancel_rx);
-
-        self.request_sender.send(request).unwrap();
-        self.request_queue_empty.set(false);
-
-        handle
-    }
-
-    /// Schedules a new task with a callback to the event-loop.
-    pub fn spawn_with_callback<F, U>(&self, work: F, callback: U) -> TaskHandle
+    pub fn spawn<F, U>(&self, work: F, callback: Option<U>) -> TaskHandle
     where
         F: FnOnce() -> TaskOutput + Send + 'static,
         U: FnOnce(LoopHandle, TaskOutput) + 'static,
@@ -763,13 +737,13 @@ impl LoopHandle {
         // null ID. The event-loop will update this value with a real ID later.
         let id = Rc::new(Cell::new(DefaultKey::null()));
         let work = Box::new(work);
-        let on_complete = Box::new(callback);
+        let on_complete = callback.map(|cb| Box::new(cb) as OnCompleteCallback);
 
         let (cancel_tx, cancel_rx) = mpsc::channel();
 
         let mut task = Task {
             id,
-            on_complete: Some(on_complete),
+            on_complete,
             cancel_tx,
         };
 
@@ -973,12 +947,12 @@ impl LoopHandle {
     }
 
     /// Start the handle with the given callback, watching for the given signal.
-    pub fn signal<F>(&self, signum: i32, lifetime: Lifetime, callback: F) -> Result<SignalHandle>
+    pub fn signal<F>(&self, signum: i32, policy: Policy, callback: F) -> Result<SignalHandle>
     where
         F: FnMut(SignalHandle, i32) + 'static,
     {
         // Parse signal number provided.
-        let signum = SignalNum::try_from(signum).map_err(|e| anyhow!(e))?;
+        let signum = SigNum::try_from(signum).map_err(|e| anyhow!(e))?;
 
         // Note: Signals are not stored in the resources map since they don't
         // keep the event-loop alive so, their IDs is a random u64.
@@ -989,7 +963,7 @@ impl LoopHandle {
         let signal = Signal {
             id,
             callback,
-            lifetime,
+            policy,
         };
 
         let handle = signal.handle(self.clone());

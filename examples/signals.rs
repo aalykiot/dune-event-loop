@@ -1,8 +1,8 @@
 extern crate crabuv;
 
-use crabuv::signals::Lifetime::Oneshot;
+use crabuv::signals::Policy;
 use crabuv::signals::SignalHandle;
-use crabuv::signals::SignalKind::SIGINT;
+use crabuv::signals::SIGINT;
 use crabuv::EventLoop;
 use crabuv::RunMode;
 use std::cell::Cell;
@@ -20,7 +20,7 @@ fn main() {
         };
     };
 
-    handle.signal(SIGINT, Oneshot, on_signal).unwrap();
+    handle.signal(SIGINT, Policy::Oneshot, on_signal).unwrap();
 
     loop {
         // We need somehow to keep the program running because signal

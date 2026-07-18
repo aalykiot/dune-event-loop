@@ -26,10 +26,10 @@ pub type OnWriteCallback = Box<dyn FnMut(TcpStreamHandle, Result<usize>) + 'stat
 pub type OnCloseCallback = Box<dyn FnMut(LoopHandle) + 'static>;
 
 /// Information about the underlying tcp socket.
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct SocketInfo {
-    pub host: SocketAddr,
-    pub remote: SocketAddr,
+    pub host: Option<SocketAddr>,
+    pub remote: Option<SocketAddr>,
 }
 
 /// Indicates the kind of readiness in the socket.
@@ -241,11 +241,11 @@ impl TcpStream {
     }
 
     /// Returns information about the connected socket.
-    pub fn get_socket_info(&self) -> Result<SocketInfo> {
-        Ok(SocketInfo {
-            host: self.socket.local_addr()?,
-            remote: self.socket.peer_addr()?,
-        })
+    pub fn get_socket_info(&self) -> SocketInfo {
+        SocketInfo {
+            host: self.socket.local_addr().ok(),
+            remote: self.socket.peer_addr().ok(),
+        }
     }
 
     /// Returns a token linked to the underline socket.
@@ -260,7 +260,7 @@ pub struct TcpStreamHandle {
     /// A shared pointer to the resource ID of the connection.
     pub(crate) id: Shared<ResourceId>,
     /// Information about the connected socket.
-    pub info: Rc<Result<SocketInfo>>,
+    pub info: Rc<SocketInfo>,
     /// A handle to the event-loop.
     handle: LoopHandle,
 }

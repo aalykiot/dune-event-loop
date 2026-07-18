@@ -2,7 +2,7 @@ use crate::event_loop::LoopHandle;
 use mio::Interest;
 use mio::Registry;
 use mio::Token;
-pub use signal_hook::consts::signal as SignalKind;
+pub use signal_hook::consts::signal::*;
 use signal_hook::low_level::emulate_default_handler;
 use std::collections::HashMap;
 
@@ -13,7 +13,7 @@ use signal_hook_mio::v1_0::Signals;
 use std::sync::mpsc;
 
 #[derive(Debug, Clone, Copy)]
-pub enum Lifetime {
+pub enum Policy {
     /// Invoked at most once.
     Oneshot,
     /// Stays active until explicitly removed.
@@ -25,9 +25,9 @@ pub enum Lifetime {
 const MAX_SIGNAL_VALUE: i32 = 31;
 
 #[derive(Debug)]
-pub(crate) struct SignalNum(i32);
+pub(crate) struct SigNum(i32);
 
-impl TryFrom<i32> for SignalNum {
+impl TryFrom<i32> for SigNum {
     type Error = String;
 
     fn try_from(value: i32) -> Result<Self, Self::Error> {
@@ -41,12 +41,12 @@ impl TryFrom<i32> for SignalNum {
             return Err("Forbidden signal provided".to_string());
         }
 
-        Ok(SignalNum(value))
+        Ok(SigNum(value))
     }
 }
 
-impl From<SignalNum> for i32 {
-    fn from(value: SignalNum) -> Self {
+impl From<SigNum> for i32 {
+    fn from(value: SigNum) -> Self {
         value.0
     }
 }
@@ -58,8 +58,8 @@ pub(crate) struct Signal {
     pub id: u64,
     /// Callback invoked when the signal is triggered.
     pub callback: SignalCallback,
-    /// Controls how long a callback remains active.
-    pub lifetime: Lifetime,
+    /// Whether the callback fires once or persists.
+    pub policy: Policy,
 }
 
 impl Signal {
@@ -149,9 +149,9 @@ impl OsSignals {
                 (handler.callback)(handle, signal);
 
                 // Keep the listener if persistent.
-                match handler.lifetime {
-                    Lifetime::Oneshot => false,
-                    Lifetime::Persistent => true,
+                match handler.policy {
+                    Policy::Oneshot => false,
+                    Policy::Persistent => true,
                 }
             });
         }
@@ -167,7 +167,7 @@ impl OsSignals {
         let handlers = match self.handlers.get_mut(&SignalKind::SIGINT) {
             Some(handlers) if !handlers.is_empty() => handlers,
             _ => {
-                emulate_default_handler(SignalKind::SIGINT).unwrap();
+                emulate_default_handler(SIGINT).unwrap();
                 return;
             }
         };
@@ -175,12 +175,12 @@ impl OsSignals {
         handlers.retain_mut(|handler| {
             // Run handler's callback.
             let handle = handler.handle(handle.clone());
-            (handler.callback)(handle, SignalKind::SIGINT);
+            (handler.callback)(handle, SIGINT);
 
             // Keep the listener if persistent.
-            match handler.lifetime {
-                Lifetime::Oneshot => false,
-                Lifetime::Persistent => true,
+            match handler.policy {
+                Policy::Oneshot => false,
+                Policy::Persistent => true,
             }
         });
     }

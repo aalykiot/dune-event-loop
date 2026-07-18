@@ -21,7 +21,7 @@ fn main() {
         println!("{}", content);
     };
 
-    handle.spawn_with_callback(read_file, read_file_cb);
+    handle.spawn(read_file, Some(read_file_cb));
 
     event_loop.run(RunMode::Default);
 }
