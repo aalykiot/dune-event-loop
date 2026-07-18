@@ -145,7 +145,7 @@ fn main() {
         };
     };
 
-    handle.signal(SIGINT, Oneshot, on_signal).unwrap();
+    handle.signal(SIGINT, Policy::Oneshot, on_signal).unwrap();
 
     loop {
         // We need somehow to keep the program running because signal
