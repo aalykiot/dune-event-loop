@@ -2,15 +2,14 @@ use crate::event_loop::LoopHandle;
 use crate::resource::Resource;
 use crate::resource::ResourceId;
 use crate::resource::Shared;
-use anyhow::Result;
 use std::any::Any;
 use std::sync::mpsc;
 
-/// The output type for tasks.
-pub type Output = Result<Box<dyn Any + Send>>;
+/// The internal output type for tasks.
+pub(crate) type Output = Box<dyn Any + Send>;
 
-pub type WorkFn = Box<dyn FnOnce() -> Output + Send>;
-pub type OnCompleteCallback = Box<dyn FnOnce(LoopHandle, Output) + 'static>;
+pub(crate) type WorkFn = Box<dyn FnOnce() -> Output + Send>;
+pub(crate) type OnCompleteCallback = Box<dyn FnOnce(LoopHandle, Output) + 'static>;
 
 /// The data required for a task resource.
 pub(crate) struct Task {

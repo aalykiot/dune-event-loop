@@ -45,6 +45,7 @@ use rand::prelude::*;
 use slotmap::DefaultKey;
 use slotmap::Key;
 use slotmap::KeyData;
+use std::any::Any;
 use std::cell::Cell;
 use std::collections::VecDeque;
 use std::io;
@@ -728,16 +729,29 @@ impl LoopHandle {
     }
 
     /// Schedules a new task to the event-loop.
-    pub fn spawn<F, U>(&self, work: F, callback: Option<U>) -> TaskHandle
+    pub fn spawn<T, F, U>(&self, work: F, callback: Option<U>) -> TaskHandle
     where
-        F: FnOnce() -> TaskOutput + Send + 'static,
-        U: FnOnce(LoopHandle, TaskOutput) + 'static,
+        T: Send + 'static,
+        F: FnOnce() -> T + Send + 'static,
+        U: FnOnce(LoopHandle, T) + 'static,
     {
         // Since the resource is not yet scheduled in the event-loop, we create a
         // null ID. The event-loop will update this value with a real ID later.
         let id = Rc::new(Cell::new(DefaultKey::null()));
-        let work = Box::new(work);
-        let on_complete = callback.map(|cb| Box::new(cb) as OnCompleteCallback);
+
+        // Box the return value for cross-thread transport.
+        let work: WorkFn = Box::new(move || {
+            let val = work();
+            Box::new(val) as Box<dyn Any + Send>
+        });
+
+        // Downcast the boxed value back to `T` before calling the user's callback.
+        let on_complete: Option<OnCompleteCallback> = callback.map(|cb| {
+            Box::new(move |handle: LoopHandle, output: TaskOutput| {
+                let val: T = *output.downcast().unwrap();
+                cb(handle, val);
+            }) as OnCompleteCallback
+        });
 
         let (cancel_tx, cancel_rx) = mpsc::channel();
 
