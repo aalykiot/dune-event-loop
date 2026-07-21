@@ -45,6 +45,7 @@ fn main() {
     };
 
     handle.spawn(read_file, Some(read_file_cb));
+
     event_loop.run(RunMode::Default);
 }
 ```
@@ -114,6 +115,7 @@ fn main() {
     };
 
     handle.timer(timeout, TimerKind::Timeout, on_timeout);
+
     event_loop.run(RunMode::Default);
 }
 ```
@@ -123,27 +125,25 @@ fn main() {
 > Certain signals, such as `SIGKILL` or `SIGSTOP`, cannot be overridden or subscribed to. Additionally, on the Windows platform, only `SIGINT` is supported.
 
 ```rust
-fn main() {
-    let mut event_loop = EventLoop::default();
+let mut event_loop = EventLoop::default();
     let handle = event_loop.handle();
     let ctrl_c = Cell::new(false);
 
     // Exit the program on double CTRL+C.
-    let on_signal = move |_: SignalHandle, _: i32| {
+    let cb = move |_: SignalHandle, _: i32| {
         match ctrl_c.get() {
             true => std::process::exit(0),
             false => ctrl_c.set(true),
         };
     };
 
-    handle.signal(SIGINT, Policy::Oneshot, on_signal).unwrap();
+    handle.signal(Kind::SIGINT, Policy::Oneshot, cb).unwrap();
 
     loop {
         // We need somehow to keep the program running because signal
         // listeners wont keep the event-loop alive.
         event_loop.run(RunMode::Once);
     }
-}
 ```
 
 > You can run all the above examples located in `/examples` folders using cargo: `cargo run --example [name]`

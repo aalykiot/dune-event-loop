@@ -2,7 +2,7 @@ use crate::event_loop::LoopHandle;
 use mio::Interest;
 use mio::Registry;
 use mio::Token;
-pub use signal_hook::consts::signal::*;
+pub use signal_hook::consts::signal as Kind;
 use signal_hook::low_level::emulate_default_handler;
 use std::collections::HashMap;
 
@@ -164,10 +164,10 @@ impl OsSignals {
         // signal handler was never initiated. Therefore, it's necessary to mimic
         // the default action when no signals are registered or if the list of
         // handlers is currently empty.
-        let handlers = match self.handlers.get_mut(&SignalKind::SIGINT) {
+        let handlers = match self.handlers.get_mut(&Kind::SIGINT) {
             Some(handlers) if !handlers.is_empty() => handlers,
             _ => {
-                emulate_default_handler(SIGINT).unwrap();
+                emulate_default_handler(Kind::SIGINT).unwrap();
                 return;
             }
         };
@@ -175,7 +175,7 @@ impl OsSignals {
         handlers.retain_mut(|handler| {
             // Run handler's callback.
             let handle = handler.handle(handle.clone());
-            (handler.callback)(handle, SIGINT);
+            (handler.callback)(handle, Kind::SIGINT);
 
             // Keep the listener if persistent.
             match handler.policy {

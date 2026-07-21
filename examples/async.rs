@@ -18,5 +18,6 @@ fn main() {
     };
 
     handle.spawn(read_file, Some(read_file_cb));
+
     event_loop.run(RunMode::Default);
 }
