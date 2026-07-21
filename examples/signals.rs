@@ -1,8 +1,10 @@
-extern crate dune_event_loop as ev_loop;
+extern crate crabuv;
 
-use ev_loop::EventLoop;
-use ev_loop::LoopHandle;
-use ev_loop::Signal::SIGINT;
+use crabuv::signals::Kind;
+use crabuv::signals::Policy;
+use crabuv::signals::SignalHandle;
+use crabuv::EventLoop;
+use crabuv::RunMode;
 use std::cell::Cell;
 
 fn main() {
@@ -11,18 +13,18 @@ fn main() {
     let ctrl_c = Cell::new(false);
 
     // Exit the program on double CTRL+C.
-    let on_signal = move |_: LoopHandle, _: i32| {
+    let cb = move |_: SignalHandle, _: i32| {
         match ctrl_c.get() {
             true => std::process::exit(0),
             false => ctrl_c.set(true),
         };
     };
 
-    handle.signal_start(SIGINT, on_signal).unwrap();
+    handle.signal(Kind::SIGINT, Policy::Oneshot, cb).unwrap();
 
     loop {
-        // We need somehow to keep the program running cause signal
+        // We need somehow to keep the program running because signal
         // listeners wont keep the event-loop alive.
-        event_loop.tick();
+        event_loop.run(RunMode::Once);
     }
 }

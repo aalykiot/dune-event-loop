@@ -1,4 +1,4 @@
-# Dune's Event Loop Library
+# crabuv
 
 This library is a multi-platform support library with a focus on asynchronous I/O. It was primarily developed for use by [Dune](https://github.com/aalykiot/dune), but can be also used in any Rust project.
 
@@ -22,14 +22,11 @@ fn main() {
     let mut event_loop = EventLoop::default();
     let handle = event_loop.handle();
 
-    handle.timer(1000, false, |h: LoopHandle| {
-        println!("Hello!");
-        h.timer(2500, false, |_: LoopHandle| println!("Hello, world!"));
+    handle.timer(Duration::from_secs(2), Timeout, |_: LoopHandle| {
+        println!("Hello, world!");
     });
 
-    while event_loop.has_pending_events() {
-        event_loop.tick();
-    }
+    event_loop.run(RunMode::Default);
 }
 ```
 
@@ -40,22 +37,16 @@ fn main() {
     let mut event_loop = EventLoop::default();
     let handle = event_loop.handle();
 
-    let read_file = || {
-        let content = std::fs::read_to_string("./examples/async.rs").unwrap();
-        Some(Ok(content.as_bytes().to_vec()))
-    };
+    let read_file = || -> Result<String> { Ok(fs::read_to_string("./examples/async.rs")?) };
 
-    let read_file_cb = |_: LoopHandle, result: TaskResult| {
-        let bytes = result.unwrap().unwrap();
-        let content = std::str::from_utf8(&bytes).unwrap();
-        println!("{}", content);
+    let read_file_cb = |_: LoopHandle, content: Result<String>| match content {
+        Ok(text) => println!("{text}"),
+        Err(e) => eprintln!("{}", e.to_string()),
     };
 
     handle.spawn(read_file, Some(read_file_cb));
 
-    while event_loop.has_pending_events() {
-        event_loop.tick();
-    }
+    event_loop.run(RunMode::Default);
 }
 ```
 
@@ -63,48 +54,43 @@ fn main() {
 
 ```rust
 fn main() {
+    let address = "0.0.0.0:3000".parse().unwrap();
     let mut event_loop = EventLoop::default();
     let handle = event_loop.handle();
 
     let on_close = |_: LoopHandle| println!("Connection closed.");
-
-    let on_write = |_: LoopHandle, _: Index, result: Result<usize>| {
+    let on_write = |_: TcpStreamHandle, result: Result<usize>| {
         if let Err(e) = result {
             eprintln!("{}", e);
         }
     };
 
-    let on_read = move |h: LoopHandle, index: Index, data: Result<Vec<u8>>| {
+    let on_read = move |stream: TcpStreamHandle, data: Result<Vec<u8>>| {
         match data {
-            Ok(data) if data.is_empty() => h.tcp_close(index, on_close),
-            Ok(data) => h.tcp_write(index, &data, on_write),
+            Ok(data) if data.is_empty() => stream.close(on_close),
+            Ok(data) => stream.write(data, on_write),
             Err(e) => eprintln!("{}", e),
         };
     };
 
-    let on_new_connection =
-        move |h: LoopHandle, index: Index, socket: Result<TcpSocketInfo>| match socket {
-            Ok(_) => h.tcp_read_start(index, on_read),
-            Err(e) => eprintln!("{}", e),
-        };
-
-    match handle.tcp_listen("127.0.0.1:9000", on_new_connection) {
-        Ok(_) => println!("Server is listening on 127.0.0.1:9000"),
+    let on_connection = move |_: TcpListenerHandle, stream: Result<TcpStreamHandle>| match stream {
+        Ok(stream) => stream.set_read_callback(on_read),
         Err(e) => eprintln!("{}", e),
     };
 
-    while event_loop.has_pending_events() {
-        event_loop.tick();
-    }
+    match handle.tcp_listen(address, on_connection) {
+        Ok(_) => println!("Server is listening on {address}"),
+        Err(e) => eprintln!("{}", e),
+    };
+
+    event_loop.run(RunMode::Default);
 }
 ```
 
 You can also connect to a remote host using a **TCP handle**.
 
 ```rust
-handle
-    .tcp_connect("104.21.45.178:80", on_connection)
-    .unwrap();
+handle.tcp_connect("188.184.67.127:80".parse()?, on_connection);
 ```
 
 **FS handles** are used to watch specified paths for changes.
@@ -114,24 +100,23 @@ fn main() {
     let mut event_loop = EventLoop::default();
     let handle = event_loop.handle();
 
-    let on_event = |_: LoopHandle, event: FsEvent| {
+    let directory = "./examples/";
+    let mode = WatchMode::Recursive;
+
+    let on_event = |_: FsWatcherHandle, event: Result<FsEvent>| {
         println!("{event:?}");
     };
 
-    let directory = "./examples/";
-    let rid = match handle.fs_event_start(directory, true, on_event) {
-        Ok(rid) => rid,
-        Err(e) => {
-            println!("{e}");
-            return;
-        }
+    let timeout = Duration::from_secs(10);
+    let watcher = handle.fs_watcher(directory, mode, on_event).unwrap();
+
+    let on_timeout = move |_: LoopHandle| {
+        watcher.stop();
     };
 
-    handle.timer(10000, false, move |h: LoopHandle| h.fs_event_stop(&rid));
+    handle.timer(timeout, TimerKind::Timeout, on_timeout);
 
-    while event_loop.has_pending_events() {
-        event_loop.tick();
-    }
+    event_loop.run(RunMode::Default);
 }
 ```
 
@@ -140,41 +125,25 @@ fn main() {
 > Certain signals, such as `SIGKILL` or `SIGSTOP`, cannot be overridden or subscribed to. Additionally, on the Windows platform, only `SIGINT` is supported.
 
 ```rust
-fn main() {
-    let mut event_loop = EventLoop::default();
+let mut event_loop = EventLoop::default();
     let handle = event_loop.handle();
-    let ctrl_c = Rc::new(Cell::new(false));
+    let ctrl_c = Cell::new(false);
 
     // Exit the program on double CTRL+C.
-    let on_signal = move |_: LoopHandle, _: i32| {
+    let cb = move |_: SignalHandle, _: i32| {
         match ctrl_c.get() {
             true => std::process::exit(0),
             false => ctrl_c.set(true),
         };
     };
 
-    handle.signal_start(SIGINT, on_signal).unwrap();
+    handle.signal(Kind::SIGINT, Policy::Oneshot, cb).unwrap();
 
     loop {
-        // We need somehow to keep the program running cause signal
+        // We need somehow to keep the program running because signal
         // listeners wont keep the event-loop alive.
-        event_loop.tick();
+        event_loop.run(RunMode::Once);
     }
-}
-```
-
-To create one-time signal handles, utilize the `signal_start_oneshot()` function.
-
-```rust
-handle.signal_start_oneshot(SIGINT, on_signal).unwrap();
-```
-
-For terminating the listener, `signal_stop()` serves as the appropriate function.
-
-```rust
-let token = handle.signal_start(SIGINT, on_signal).unwrap();
-
-handle.signal_stop(&token);
 ```
 
 > You can run all the above examples located in `/examples` folders using cargo: `cargo run --example [name]`

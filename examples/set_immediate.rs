@@ -1,17 +1,16 @@
 extern crate crabuv;
 
-use crabuv::timers::TimerKind::Timeout;
+use crabuv::check::CheckHandle;
 use crabuv::EventLoop;
-use crabuv::LoopHandle;
 use crabuv::RunMode;
-use std::time::Duration;
 
 fn main() {
     let mut event_loop = EventLoop::default();
     let handle = event_loop.handle();
 
-    handle.timer(Duration::from_secs(2), Timeout, |_: LoopHandle| {
-        println!("Hello, world!");
+    handle.check(|handle: CheckHandle| {
+        println!("This will be called once, after the poll phase!");
+        handle.remove();
     });
 
     event_loop.run(RunMode::Default);
