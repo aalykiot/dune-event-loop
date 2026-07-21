@@ -3,6 +3,7 @@ use crate::resource::Resource;
 use crate::resource::ResourceId;
 use crate::resource::Shared;
 use std::collections::BTreeMap;
+use std::rc::Rc;
 use std::time::Duration;
 use std::time::Instant;
 
@@ -65,7 +66,7 @@ impl Timer {
     /// Returns a handle to the timer resource.
     pub fn handle(&self, handle: LoopHandle) -> TimerHandle {
         TimerHandle {
-            id: self.id.clone(),
+            id: Rc::clone(&self.id),
             handle,
         }
     }
@@ -86,7 +87,7 @@ impl TimerHandle {
     /// Cancels the scheduled timer.
     pub fn cancel(&self) {
         // Consume self and call the internal cancle_timer method.
-        self.handle.cancel_timer(self.id.clone());
+        self.handle.cancel_timer(Rc::clone(&self.id));
     }
 
     /// Returns a handle to the event-loop.

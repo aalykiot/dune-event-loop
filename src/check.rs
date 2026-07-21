@@ -2,6 +2,7 @@ use crate::event_loop::LoopHandle;
 use crate::resource::Resource;
 use crate::resource::ResourceId;
 use crate::resource::Shared;
+use std::rc::Rc;
 
 pub type Callback = Box<dyn FnMut(CheckHandle) + 'static>;
 
@@ -16,7 +17,7 @@ impl Check {
     /// Returns a handle to the check resource.
     pub fn handle(&self, handle: LoopHandle) -> CheckHandle {
         CheckHandle {
-            id: self.id.clone(),
+            id: Rc::clone(&self.id),
             handle,
         }
     }

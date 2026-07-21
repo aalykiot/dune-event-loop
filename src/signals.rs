@@ -1,7 +1,4 @@
 use crate::event_loop::LoopHandle;
-use mio::Interest;
-use mio::Registry;
-use mio::Token;
 pub use signal_hook::consts::signal as Kind;
 use signal_hook::low_level::emulate_default_handler;
 use std::collections::HashMap;
@@ -9,8 +6,17 @@ use std::collections::HashMap;
 #[cfg(target_family = "unix")]
 use signal_hook_mio::v1_0::Signals;
 
+#[cfg(target_family = "unix")]
+use mio::{Interest, Registry, Token};
+
 #[cfg(target_family = "windows")]
-use std::sync::mpsc;
+use std::{sync::mpsc, sync::Arc};
+
+#[cfg(target_family = "windows")]
+use mio::Waker;
+
+#[cfg(target_family = "windows")]
+use crate::event_loop::Event;
 
 #[derive(Debug, Clone, Copy)]
 pub enum Policy {
@@ -113,7 +119,7 @@ impl OsSignals {
     }
 
     #[cfg(target_family = "windows")]
-    fn new(notifier: mpsc::Sender<Event>, waker: Arc<Waker>) -> Self {
+    pub fn new(notifier: mpsc::Sender<Event>, waker: Arc<Waker>) -> Self {
         // Spawn signal watching thread.
         let on_signal_handler = move || {
             notifier.send(Event::WinSigInt).unwrap();
@@ -158,7 +164,7 @@ impl OsSignals {
     }
 
     #[cfg(target_family = "windows")]
-    fn run_pending(&mut self, handle: LoopHandle) {
+    pub fn run_pending(&mut self, handle: LoopHandle) {
         // Note: In Windows, a dedicated thread is always on standby to listen for
         // CTRL+C signals. Consequently, this function may be activated even if a
         // signal handler was never initiated. Therefore, it's necessary to mimic

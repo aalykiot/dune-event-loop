@@ -30,7 +30,7 @@ impl TcpListener {
     /// Returns a handle to the tcp listener resource.
     pub fn handle(&self, handle: LoopHandle) -> TcpListenerHandle {
         TcpListenerHandle {
-            id: self.id.clone(),
+            id: Rc::clone(&self.id),
             handle,
         }
     }
@@ -103,7 +103,7 @@ impl TcpListenerHandle {
         F: Fn(LoopHandle) + 'static,
     {
         // Use the event-loop handle to shutdown the tcp listenr.
-        self.handle.tcp_stop(self.id.clone(), callback);
+        self.handle.tcp_stop(Rc::clone(&self.id), callback);
     }
 
     /// Returns a handle to the event-loop.

@@ -3,6 +3,7 @@ use crate::resource::Resource;
 use crate::resource::ResourceId;
 use crate::resource::Shared;
 use std::any::Any;
+use std::rc::Rc;
 use std::sync::mpsc;
 
 /// The internal output type for tasks.
@@ -29,7 +30,7 @@ impl Task {
     /// Returns a handle to the task resource.
     pub fn handle(&mut self, handle: LoopHandle) -> TaskHandle {
         TaskHandle {
-            id: self.id.clone(),
+            id: Rc::clone(&self.id),
             cancelation: self.cancel_tx.clone(),
             handle,
         }
@@ -58,7 +59,7 @@ impl TaskHandle {
         let handle = self.handle.clone();
         let _ = self.cancelation.send(());
 
-        handle.cancel_task(self.id.clone());
+        handle.cancel_task(Rc::clone(&self.id));
     }
 
     /// Returns a handle to the event-loop.

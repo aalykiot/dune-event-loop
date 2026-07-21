@@ -69,7 +69,7 @@ impl TcpStream {
     pub fn handle(&self, handle: LoopHandle) -> TcpStreamHandle {
         let socket_info = Rc::new(self.get_socket_info());
         TcpStreamHandle {
-            id: self.id.clone(),
+            id: Rc::clone(&self.id),
             info: socket_info,
             handle,
         }
@@ -128,7 +128,7 @@ impl TcpStream {
         };
 
         let tcp_handle = TcpStreamHandle {
-            id: self.id.clone(),
+            id: Rc::clone(&self.id),
             info: Rc::new(socket_info),
             handle: handle.clone(),
         };
@@ -164,7 +164,7 @@ impl TcpStream {
     ) {
         // Create a handle to the resource.
         let tcp_handle = TcpStreamHandle {
-            id: self.id.clone(),
+            id: Rc::clone(&self.id),
             info: Rc::new(self.get_socket_info()),
             handle: handle.clone(),
         };
@@ -273,7 +273,7 @@ impl TcpStreamHandle {
         F: Fn(TcpStreamHandle, Result<usize>) + 'static,
     {
         // Use the event-loop handle to write.
-        self.handle.tcp_write(self.id.clone(), data, callback);
+        self.handle.tcp_write(Rc::clone(&self.id), data, callback);
     }
 
     /// Starts reading from a tcp stream.
@@ -282,7 +282,7 @@ impl TcpStreamHandle {
         F: Fn(TcpStreamHandle, Result<Vec<u8>>) + 'static,
     {
         // Use the event-loop handle to set a read callback for the stream.
-        self.handle.tcp_read_start(self.id.clone(), callback);
+        self.handle.tcp_read_start(Rc::clone(&self.id), callback);
     }
 
     /// Closes the write side of the tcp stream.
@@ -291,7 +291,7 @@ impl TcpStreamHandle {
         F: Fn(LoopHandle) + 'static,
     {
         // Use the event-loop handle to shutdown the write side of the stream.
-        self.handle.tcp_shutdown(self.id.clone(), callback);
+        self.handle.tcp_shutdown(Rc::clone(&self.id), callback);
     }
 
     /// Completely closes the tcp stream.
@@ -300,7 +300,7 @@ impl TcpStreamHandle {
         F: Fn(LoopHandle) + 'static,
     {
         // Use the event-loop handle to close the stream.
-        self.handle.tcp_close(self.id.clone(), callback);
+        self.handle.tcp_close(Rc::clone(&self.id), callback);
     }
 
     /// Returns a handle to the event-loop.

@@ -144,7 +144,7 @@ impl EventLoop {
 
         // Monitor system signals through dedicated thread.
         #[cfg(target_family = "windows")]
-        let signals = OsSignals::new(event_dispatcher.clone(), waker.clone());
+        let signals = OsSignals::new(event_sender.clone(), Arc::clone(&waker));
 
         EventLoop {
             current_time: Instant::now(),
@@ -392,7 +392,7 @@ impl EventLoop {
                 for stream in clients {
                     // For every new connection, add the stream to the resources so we can
                     // attach an actual ID and declare interest in the registry.
-                    let id_slot = stream.id.clone();
+                    let id_slot = Rc::clone(&stream.id);
                     let id = self.resources.insert(Box::new(stream));
 
                     id_slot.set(id);
@@ -426,7 +426,7 @@ impl EventLoop {
         // resource ID to the value returned by the insertion operation.
         let expires_at = self.current_time + timer.delay;
 
-        let id_slot = timer.id.clone();
+        let id_slot = Rc::clone(&timer.id);
         let id = self.resources.insert(Box::new(timer));
 
         id_slot.set(id);
@@ -446,13 +446,13 @@ impl EventLoop {
     fn task_spawn(&mut self, task: Task, work: WorkFn, cancel_rx: mpsc::Receiver<()>) {
         // The reason we insert the stream to the map and then we get a reference
         // is so we can create a token with the correct resource ID.
-        let id_slot = task.id.clone();
+        let id_slot = Rc::clone(&task.id);
         let id = self.resources.insert(Box::new(task));
 
         id_slot.set(id);
 
         let event_sender = self.event_sender.clone();
-        let waker = self.waker.clone();
+        let waker = Arc::clone(&self.waker);
 
         self.thread_pool.spawn(
             move || {
@@ -478,7 +478,7 @@ impl EventLoop {
     fn tcp_stream_init(&mut self, stream: Box<TcpStream>) {
         // The reason we insert the stream to the map and then we get a reference
         // is so we can create a token with the correct resource ID.
-        let id_slot = stream.id.clone();
+        let id_slot = Rc::clone(&stream.id);
         let id = self.resources.insert(stream);
 
         id_slot.set(id);
@@ -501,7 +501,7 @@ impl EventLoop {
     fn tcp_listener_init(&mut self, listener: Box<TcpListener>) {
         // The reason we insert the stream to the map and then we get a reference
         // is so we can create a token with the correct resource ID.
-        let id_slot = listener.id.clone();
+        let id_slot = Rc::clone(&listener.id);
         let id = self.resources.insert(listener);
 
         id_slot.set(id);
@@ -585,7 +585,7 @@ impl EventLoop {
     fn check_init(&mut self, check: Check) {
         // The reason we insert the stream to the map and then we get a reference
         // is so we can create a token with the correct resource ID.
-        let id_slot = check.id.clone();
+        let id_slot = Rc::clone(&check.id);
         let id = self.resources.insert(Box::new(check));
 
         id_slot.set(id);
@@ -608,7 +608,7 @@ impl EventLoop {
     fn fs_watcher_start(&mut self, fs_watcher: FsWatcher) {
         // The reason we insert the stream to the map and then we get a reference
         // is so we can create a token with the correct resource ID.
-        let id_slot = fs_watcher.id.clone();
+        let id_slot = Rc::clone(&fs_watcher.id);
         let id = self.resources.insert(Box::new(fs_watcher));
 
         id_slot.set(id);
@@ -616,7 +616,7 @@ impl EventLoop {
         // Note: We obtain a reference to the newly inserted fs_watcher before starting
         // the watcher because the watcher requires a valid resource ID, which is
         // only assigned once the fs_event has been inserted.
-        let waker = self.waker.clone();
+        let waker = Arc::clone(&self.waker);
         let event_sender = self.event_sender.clone();
 
         self.resources
@@ -663,15 +663,15 @@ impl EventLoop {
     /// Returns a new handle to the event-loop.
     pub fn handle(&self) -> LoopHandle {
         LoopHandle {
-            request_sender: self.request_sender.clone(),
-            request_queue_empty: self.request_queue_empty.clone(),
+            request_sender: Rc::clone(&self.request_sender),
+            request_queue_empty: Rc::clone(&self.request_queue_empty),
         }
     }
 
     /// Returns a new interrupt handle to the event-loop (sharable across threads).
     pub fn interrupt_handle(&self) -> LoopInterruptHandle {
         LoopInterruptHandle {
-            waker: self.waker.clone(),
+            waker: Arc::clone(&self.waker),
         }
     }
 }

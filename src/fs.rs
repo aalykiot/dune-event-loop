@@ -10,6 +10,7 @@ use notify::RecommendedWatcher;
 use notify::RecursiveMode;
 use notify::Watcher;
 use std::path::PathBuf;
+use std::rc::Rc;
 use std::sync::mpsc::Sender;
 use std::sync::Arc;
 
@@ -58,7 +59,7 @@ impl FsWatcher {
     /// Returns a handle to the fs event resource.
     pub fn handle(&self, handle: LoopHandle) -> FsWatcherHandle {
         FsWatcherHandle {
-            id: self.id.clone(),
+            id: Rc::clone(&self.id),
             handle,
         }
     }
@@ -78,7 +79,7 @@ pub struct FsWatcherHandle {
 impl FsWatcherHandle {
     /// Stops the watcher, the callback will no longer be called.
     pub fn stop(&self) {
-        self.handle.fs_watcher_stop(self.id.clone());
+        self.handle.fs_watcher_stop(Rc::clone(&self.id));
     }
 
     /// Returns a handle to the event-loop.
