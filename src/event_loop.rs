@@ -91,6 +91,8 @@ pub(crate) enum Event {
     FsWatch(ResourceId, Result<FsEvent>),
     /// An interrupt signal detected (Windows platform).
     WinSigInt,
+    /// Terminal input data has been received.
+    TTYInput(ResourceId, Vec<u8>),
 }
 
 #[derive(Debug)]
