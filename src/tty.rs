@@ -7,6 +7,7 @@ use crossterm::terminal;
 use std::io;
 use std::io::Write;
 use std::rc::Rc;
+use std::sync::mpsc;
 
 pub type OnReadCallback = Box<dyn FnMut(TTYHandle, Result<Vec<u8>>) + 'static>;
 
@@ -21,30 +22,34 @@ pub enum Mode {
 }
 
 /// The data required for a TTY resource.
-pub(crate) struct TTY {
+pub(crate) struct TTYStream {
     pub id: Shared<ResourceId>,
-    pub on_read: Option<OnReadCallback>,
+    pub on_read: OnReadCallback,
+    pub stop_tx: mpsc::Sender<()>,
 }
 
-impl TTY {
-    /// Returns a handle to the tty resource.
+impl TTYStream {
+    /// Returns a handle to the TTY resource.
     pub fn handle(&self, handle: LoopHandle) -> TTYHandle {
         TTYHandle {
             id: Rc::clone(&self.id),
+            stop_tx: Some(self.stop_tx.clone()),
             handle,
         }
     }
 }
 
-impl Resource for TTY {}
+impl Resource for TTYStream {}
 
-/// A reference like struct to tty.
+/// A reference like struct to a TTY instance.
 #[derive(Debug, Clone)]
 pub struct TTYHandle {
     /// A shared pointer to the resource ID of the tty.
     pub(crate) id: Shared<ResourceId>,
+    /// Sends a signal to stop the input-reading thread.
+    pub(crate) stop_tx: Option<mpsc::Sender<()>>,
     /// A handle to the event-loop.
-    handle: LoopHandle,
+    pub(crate) handle: LoopHandle,
 }
 
 impl TTYHandle {

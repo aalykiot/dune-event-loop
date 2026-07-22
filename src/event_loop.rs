@@ -31,6 +31,8 @@ use crate::timers::Timer;
 use crate::timers::TimerHandle;
 use crate::timers::TimerKind;
 use crate::timers::TimersCollection;
+use crate::tty::TTYHandle;
+use crate::tty::TTYStream;
 use anyhow::anyhow;
 use anyhow::Result;
 use mio::net::TcpListener as MioListener;
@@ -49,6 +51,7 @@ use std::any::Any;
 use std::cell::Cell;
 use std::collections::VecDeque;
 use std::io;
+use std::io::Read;
 use std::net::SocketAddr;
 use std::num::NonZeroUsize;
 use std::path::Path;
@@ -79,6 +82,7 @@ enum Request {
     FsWatcherStop(Shared<ResourceId>),
     SignalStart(SigNum, Signal),
     SignalStop(u64),
+    TTYRead(Box<TTYStream>, mpsc::Receiver<()>),
 }
 
 #[allow(dead_code)]
@@ -91,8 +95,8 @@ pub(crate) enum Event {
     FsWatch(ResourceId, Result<FsEvent>),
     /// An interrupt signal detected (Windows platform).
     WinSigInt,
-    /// Terminal input data has been received.
-    TTYInput(ResourceId, Vec<u8>),
+    /// Terminal input has been received.
+    TTYInput(ResourceId, Result<Vec<u8>>),
 }
 
 #[derive(Debug)]
@@ -278,6 +282,7 @@ impl EventLoop {
                 Event::ThreadPool(id, output) => self.process_finished_task(id, output),
                 Event::FsWatch(id, event) => self.process_fs_event(id, event),
                 Event::WinSigInt => self.signals.run_pending(self.handle()),
+                Event::TTYInput(_, _) => todo!(),
             }
 
             // Since each event might schedule additional I/O we need to process
@@ -343,6 +348,7 @@ impl EventLoop {
                 Request::FsWatcherStop(id) => self.fs_watcher_stop(id),
                 Request::SignalStart(signum, signal) => self.signal_start(signum, signal),
                 Request::SignalStop(id) => self.signal_stop(id),
+                Request::TTYRead(stream, stop_rx) => self.tty_read_start(stream, stop_rx),
             }
         }
         self.request_queue_empty.set(true);
@@ -460,9 +466,10 @@ impl EventLoop {
             move || {
                 let output = work();
                 let event = Event::ThreadPool(id, output);
-
-                event_sender.send(event).unwrap();
-                waker.wake().unwrap();
+                // Ignore the result to avoid panicking if the receiving end of
+                // the channel has already been closed or dropped.
+                let _ = event_sender.send(event);
+                let _ = waker.wake();
             },
             cancel_rx,
         );
@@ -655,11 +662,45 @@ impl EventLoop {
         self.signals.remove_handler(id)
     }
 
+    /// Registers a resources to read from the TTY stream.
+    fn tty_read_start(&mut self, stream: Box<TTYStream>, stop_rx: mpsc::Receiver<()>) {
+        // The reason we insert the stream to the map and then we get a reference
+        // is so we can create a token with the correct resource ID.
+        let (_, noop_cancellation) = mpsc::channel();
+        let id_slot = Rc::clone(&stream.id);
+        let id = self.resources.insert(stream);
+
+        id_slot.set(id);
+
+        let read_tty_input = {
+            let id = id_slot.get();
+            let event_sender = self.event_sender.clone();
+            move || {
+                // Buffer to store stdin read bytes.
+                let mut buffer = [0u8; 1024];
+                let mut stdin = io::stdin().lock();
+
+                // Keep reading from stdin until the TTY handle
+                // signals that reading should stop.
+                while stop_rx.try_recv().is_err() {
+                    let result = stdin
+                        .read(&mut buffer)
+                        .map(|n| buffer[..n].to_vec())
+                        .map_err(Into::into);
+
+                    // Notify the event-loop about the stdin input.
+                    event_sender.send(Event::TTYInput(id, result)).unwrap();
+                }
+            }
+        };
+
+        // Use the thread-pool to schedule the stdin task.
+        self.thread_pool.spawn(read_tty_input, noop_cancellation);
+    }
+
     /// Returns true if there is pending work still ongoing.
     pub fn has_pending_events(&self) -> bool {
-        !self.resources.is_empty()
-            || !self.request_queue_empty.get()
-            || self.thread_pool.pending_count() != 0
+        !self.resources.is_empty() || !self.request_queue_empty.get()
     }
 
     /// Returns a new handle to the event-loop.
@@ -998,6 +1039,28 @@ impl LoopHandle {
 
         self.request_sender.send(request).unwrap();
         self.request_queue_empty.set(false);
+    }
+
+    /// Create a new TTY stream.
+    pub fn tty(&self) -> TTYHandle {
+        // TTY resources are added to the resource map only after they start
+        // reading terminal input, so for now we'll assign them a null ID.
+        let id = Rc::new(Cell::new(DefaultKey::null()));
+        let handle = self.clone();
+
+        TTYHandle {
+            id,
+            handle,
+            stop_tx: None,
+        }
+    }
+
+    /// Starts reading from the TTY stream.
+    pub(crate) fn tty_read_start<F>(&self, id: Shared<ResourceId>, callback: F)
+    where
+        F: Fn(TTYHandle, Vec<u8>) + 'static,
+    {
+        todo!()
     }
 }
 
