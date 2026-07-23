@@ -12,6 +12,7 @@ This library is a multi-platform support library with a focus on asynchronous I/
 - Thread pool
 - File system events
 - Signals
+- ANSI escape code controlled TTY
 
 ## Documentation
 
@@ -22,7 +23,7 @@ fn main() {
     let mut event_loop = EventLoop::default();
     let handle = event_loop.handle();
 
-    handle.timer(Duration::from_secs(2), Timeout, |_: LoopHandle| {
+    handle.timer(Duration::from_secs(2), TimerKind::Timeout, |_: LoopHandle| {
         println!("Hello, world!");
     });
 
@@ -74,7 +75,7 @@ fn main() {
     };
 
     let on_connection = move |_: TcpListenerHandle, stream: Result<TcpStreamHandle>| match stream {
-        Ok(stream) => stream.set_read_callback(on_read),
+        Ok(stream) => stream.start_reading(on_read),
         Err(e) => eprintln!("{}", e),
     };
 
@@ -145,6 +146,37 @@ fn main() {
         // listeners wont keep the event-loop alive.
         event_loop.run(RunMode::Once);
     }
+}
+```
+
+**TTY handles** provide access to the terminal (stdin/stdout).
+
+```rust
+fn main() {
+    let mut event_loop = EventLoop::default();
+    let handle = event_loop.handle();
+    let tty = handle.tty();
+
+    tty.start_reading(|tty: TtyHandle, data: Result<Vec<u8>>| match data {
+        Ok(bytes) => {
+            let line = String::from_utf8_lossy(&bytes);
+            let line = line.trim();
+
+            if line == "/exit" {
+                tty.stop_reading();
+                return;
+            }
+            println!("You typed: '{line}'");
+        }
+        Err(e) => {
+            eprintln!("Read error: {e}");
+            tty.stop_reading();
+        }
+    });
+
+    println!("Type something (or /exit to quit):");
+
+    event_loop.run(RunMode::Default);
 }
 ```
 
