@@ -1,4 +1,7 @@
-extern crate crabuv;
+//! An async task example.
+//!
+//! Spawns a file-read task on a background thread and prints the result when
+//! it completes.
 
 use anyhow::Result;
 use crabuv::EventLoop;

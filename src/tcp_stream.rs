@@ -67,7 +67,7 @@ impl Resource for TcpStream {
 impl TcpStream {
     /// Returns a handle to the tcp stream resource.
     pub fn handle(&self, handle: LoopHandle) -> TcpStreamHandle {
-        let socket_info = Rc::new(self.get_socket_info());
+        let socket_info = Rc::new(self.socket_info());
         TcpStreamHandle {
             id: Rc::clone(&self.id),
             info: socket_info,
@@ -89,7 +89,7 @@ impl TcpStream {
         close_queue: &mut BasicQueue,
     ) {
         let mut bytes_read = 0;
-        let socket_info = self.get_socket_info();
+        let socket_info = self.socket_info();
 
         // This will help us catch errors and FIN packets.
         let mut read_error: Option<io::Error> = None;
@@ -154,7 +154,7 @@ impl TcpStream {
         };
     }
 
-    /// Tries to read from a ready tcp socket. Ready means that
+    /// Tries to write to a ready tcp socket. Ready means that
     /// the operation won't block the current thread.
     pub fn write_to_socket(
         &mut self,
@@ -165,7 +165,7 @@ impl TcpStream {
         // Create a handle to the resource.
         let tcp_handle = TcpStreamHandle {
             id: Rc::clone(&self.id),
-            info: Rc::new(self.get_socket_info()),
+            info: Rc::new(self.socket_info()),
             handle: handle.clone(),
         };
 
@@ -241,7 +241,7 @@ impl TcpStream {
     }
 
     /// Returns information about the connected socket.
-    pub fn get_socket_info(&self) -> SocketInfo {
+    pub fn socket_info(&self) -> SocketInfo {
         SocketInfo {
             host: self.socket.local_addr().ok(),
             remote: self.socket.peer_addr().ok(),
@@ -276,22 +276,22 @@ impl TcpStreamHandle {
         self.handle.tcp_write(Rc::clone(&self.id), data, callback);
     }
 
-    /// Starts reading from a tcp stream.
-    pub fn set_read_callback<F>(&self, callback: F)
+    /// Starts reading from the tcp stream.
+    pub fn start_reading<F>(&self, callback: F)
     where
         F: Fn(TcpStreamHandle, Result<Vec<u8>>) + 'static,
     {
-        // Use the event-loop handle to set a read callback for the stream.
+        // Use the event-loop handle to start reading from the stream.
         self.handle.tcp_read_start(Rc::clone(&self.id), callback);
     }
 
     /// Closes the write side of the tcp stream.
-    pub fn shutdown<F>(&self, callback: F)
+    pub fn shutdown_write<F>(&self, callback: F)
     where
         F: Fn(LoopHandle) + 'static,
     {
         // Use the event-loop handle to shutdown the write side of the stream.
-        self.handle.tcp_shutdown(Rc::clone(&self.id), callback);
+        self.handle.tcp_shutdown_write(Rc::clone(&self.id), callback);
     }
 
     /// Completely closes the tcp stream.
@@ -304,7 +304,7 @@ impl TcpStreamHandle {
     }
 
     /// Returns a handle to the event-loop.
-    pub fn get_loop(&self) -> LoopHandle {
+    pub fn loop_handle(&self) -> LoopHandle {
         self.handle.clone()
     }
 }

@@ -125,7 +125,8 @@ fn main() {
 > Certain signals, such as `SIGKILL` or `SIGSTOP`, cannot be overridden or subscribed to. Additionally, on the Windows platform, only `SIGINT` is supported.
 
 ```rust
-let mut event_loop = EventLoop::default();
+fn main() {
+    let mut event_loop = EventLoop::default();
     let handle = event_loop.handle();
     let ctrl_c = Cell::new(false);
 
@@ -144,6 +145,7 @@ let mut event_loop = EventLoop::default();
         // listeners wont keep the event-loop alive.
         event_loop.run(RunMode::Once);
     }
+}
 ```
 
 > You can run all the above examples located in `/examples` folders using cargo: `cargo run --example [name]`

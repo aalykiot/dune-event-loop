@@ -1,4 +1,7 @@
-extern crate crabuv;
+//! A signal handling example.
+//!
+//! Listens for SIGINT (Ctrl+C) and exits on a second press. Uses oneshot
+//! policy so the callback fires only once per signal registration.
 
 use crabuv::signals::Kind;
 use crabuv::signals::Policy;

@@ -1,4 +1,6 @@
-extern crate crabuv;
+//! A simple timer example.
+//!
+//! Prints "Hello, world!" after a 2-second timeout.
 
 use crabuv::timers::TimerKind::Timeout;
 use crabuv::EventLoop;

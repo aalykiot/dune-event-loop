@@ -1,4 +1,7 @@
-extern crate crabuv;
+//! A simple TCP echo server example.
+//!
+//! Listens on port 3000 and echoes back any data received from connected
+//! clients.
 
 use anyhow::Result;
 use crabuv::tcp_listener::TcpListenerHandle;
@@ -28,7 +31,7 @@ fn main() {
     };
 
     let on_connection = move |_: TcpListenerHandle, stream: Result<TcpStreamHandle>| match stream {
-        Ok(stream) => stream.set_read_callback(on_read),
+        Ok(stream) => stream.start_reading(on_read),
         Err(e) => eprintln!("{}", e),
     };
 

@@ -83,7 +83,7 @@ impl FsWatcherHandle {
     }
 
     /// Returns a handle to the event-loop.
-    pub fn get_loop(&self) -> LoopHandle {
+    pub fn loop_handle(&self) -> LoopHandle {
         self.handle.clone()
     }
 }

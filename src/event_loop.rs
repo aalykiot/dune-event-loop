@@ -31,8 +31,8 @@ use crate::timers::Timer;
 use crate::timers::TimerHandle;
 use crate::timers::TimerKind;
 use crate::timers::TimersCollection;
-use crate::tty::TTYHandle;
-use crate::tty::TTYStream;
+use crate::tty::TtyHandle;
+use crate::tty::TtyReader;
 use anyhow::anyhow;
 use anyhow::Result;
 use mio::net::TcpListener as MioListener;
@@ -70,10 +70,10 @@ enum Request {
     TcpInit(Box<TcpStream>),
     TcpWrite(Shared<ResourceId>, Vec<u8>, OnWriteCallback),
     TcpRead(Shared<ResourceId>, OnReadCallback),
-    TcpShutdown(Shared<ResourceId>, OnCloseCallback),
+    TcpShutdownWrite(Shared<ResourceId>, OnCloseCallback),
     TcpClose(Shared<ResourceId>, OnCloseCallback),
     TcpListen(Box<TcpListener>),
-    TcpListenStop(Shared<ResourceId>, OnCloseCallback),
+    TcpListenerClose(Shared<ResourceId>, OnCloseCallback),
     TaskSpawn(Task, WorkFn, mpsc::Receiver<()>),
     TaskCancel(Shared<ResourceId>),
     CheckInit(Check),
@@ -82,7 +82,8 @@ enum Request {
     FsWatcherStop(Shared<ResourceId>),
     SignalStart(SigNum, Signal),
     SignalStop(u64),
-    TTYRead(Box<TTYStream>, mpsc::Receiver<()>),
+    TtyRead(Box<TtyReader>, mpsc::Receiver<()>),
+    TtyClose(Shared<ResourceId>),
 }
 
 #[allow(dead_code)]
@@ -96,7 +97,7 @@ pub(crate) enum Event {
     /// An interrupt signal detected (Windows platform).
     WinSigInt,
     /// Terminal input has been received.
-    TTYInput(ResourceId, Result<Vec<u8>>),
+    TtyInput(ResourceId, Result<Vec<u8>>),
 }
 
 #[derive(Debug)]
@@ -282,7 +283,7 @@ impl EventLoop {
                 Event::ThreadPool(id, output) => self.process_finished_task(id, output),
                 Event::FsWatch(id, event) => self.process_fs_event(id, event),
                 Event::WinSigInt => self.signals.run_pending(self.handle()),
-                Event::TTYInput(_, _) => todo!(),
+                Event::TtyInput(id, data) => self.process_tty_input(id, data),
             }
 
             // Since each event might schedule additional I/O we need to process
@@ -336,10 +337,12 @@ impl EventLoop {
                 Request::TcpInit(stream) => self.tcp_stream_init(stream),
                 Request::TcpRead(id, callback) => self.tcp_stream_read_start(id, callback),
                 Request::TcpWrite(id, data, cb) => self.tcp_stream_write(id, data, cb),
-                Request::TcpShutdown(id, callback) => self.tcp_stream_shutdown(id, callback),
+                Request::TcpShutdownWrite(id, callback) => {
+                    self.tcp_stream_shutdown_write(id, callback)
+                }
                 Request::TcpClose(id, callback) => self.tcp_stream_close(id, callback),
                 Request::TcpListen(listener) => self.tcp_listener_init(listener),
-                Request::TcpListenStop(id, callback) => self.tcp_listener_stop(id, callback),
+                Request::TcpListenerClose(id, callback) => self.tcp_listener_close(id, callback),
                 Request::TaskSpawn(task, work, cancel_rx) => self.task_spawn(task, work, cancel_rx),
                 Request::TaskCancel(id) => self.task_cancel(id),
                 Request::CheckInit(check) => self.check_init(check),
@@ -348,7 +351,8 @@ impl EventLoop {
                 Request::FsWatcherStop(id) => self.fs_watcher_stop(id),
                 Request::SignalStart(signum, signal) => self.signal_start(signum, signal),
                 Request::SignalStop(id) => self.signal_stop(id),
-                Request::TTYRead(stream, stop_rx) => self.tty_read_start(stream, stop_rx),
+                Request::TtyRead(stream, stop_rx) => self.tty_read_start(stream, stop_rx),
+                Request::TtyClose(id) => self.tty_close(id),
             }
         }
         self.request_queue_empty.set(true);
@@ -373,6 +377,17 @@ impl EventLoop {
 
         if let Some(watcher) = self.resources.get_mut_as::<FsWatcher>(id) {
             watcher.run_callback(handle, event);
+        }
+    }
+
+    /// Processes any TTY received data.
+    fn process_tty_input(&mut self, id: ResourceId, data: Result<Vec<u8>>) {
+        // Get a reference to the resource and run the callback.
+        let handle = self.handle();
+
+        if let Some(tty) = self.resources.get_mut_as::<TtyReader>(id) {
+            let tty_handle = tty.handle(handle);
+            (tty.on_read)(tty_handle, data);
         }
     }
 
@@ -561,7 +576,7 @@ impl EventLoop {
             .unwrap();
     }
 
-    /// Schedules a full tcp stream shutdown.
+    /// Schedules a full tcp stream close.
     fn tcp_stream_close(&mut self, id: Shared<ResourceId>, callback: OnCloseCallback) {
         // Get a mut reference to a tcp stream resource.
         let stream = self.resources.get_mut_as::<TcpStream>(id.get()).unwrap();
@@ -571,7 +586,7 @@ impl EventLoop {
     }
 
     /// Stops the listener from accepting new connections.
-    fn tcp_listener_stop(&mut self, id: Shared<ResourceId>, callback: OnCloseCallback) {
+    fn tcp_listener_close(&mut self, id: Shared<ResourceId>, callback: OnCloseCallback) {
         // Get a mut reference to a tcp stream resource.
         let stream = self.resources.get_mut_as::<TcpListener>(id.get()).unwrap();
         stream.on_close = Some(callback);
@@ -580,7 +595,7 @@ impl EventLoop {
     }
 
     /// Closes the write side of the tcp stream.
-    fn tcp_stream_shutdown(&mut self, id: Shared<ResourceId>, mut callback: OnCloseCallback) {
+    fn tcp_stream_shutdown_write(&mut self, id: Shared<ResourceId>, mut callback: OnCloseCallback) {
         // We need to take the handle here due to borrowing constraints.
         let handle = self.handle();
 
@@ -663,18 +678,19 @@ impl EventLoop {
     }
 
     /// Registers a resources to read from the TTY stream.
-    fn tty_read_start(&mut self, stream: Box<TTYStream>, stop_rx: mpsc::Receiver<()>) {
+    fn tty_read_start(&mut self, reader: Box<TtyReader>, stop_rx: mpsc::Receiver<()>) {
         // The reason we insert the stream to the map and then we get a reference
         // is so we can create a token with the correct resource ID.
         let (_, noop_cancellation) = mpsc::channel();
-        let id_slot = Rc::clone(&stream.id);
-        let id = self.resources.insert(stream);
+        let id_slot = Rc::clone(&reader.id);
+        let id = self.resources.insert(reader);
 
         id_slot.set(id);
 
         let read_tty_input = {
             let id = id_slot.get();
             let event_sender = self.event_sender.clone();
+            let waker = Arc::clone(&self.waker);
             move || {
                 // Buffer to store stdin read bytes.
                 let mut buffer = [0u8; 1024];
@@ -689,13 +705,19 @@ impl EventLoop {
                         .map_err(Into::into);
 
                     // Notify the event-loop about the stdin input.
-                    event_sender.send(Event::TTYInput(id, result)).unwrap();
+                    event_sender.send(Event::TtyInput(id, result)).unwrap();
+                    waker.wake().unwrap();
                 }
             }
         };
 
         // Use the thread-pool to schedule the stdin task.
         self.thread_pool.spawn(read_tty_input, noop_cancellation);
+    }
+
+    /// Stops reading from a TTY stream.
+    fn tty_close(&mut self, id: Shared<ResourceId>) {
+        self.resources.remove(id.get());
     }
 
     /// Returns true if there is pending work still ongoing.
@@ -900,17 +922,17 @@ impl LoopHandle {
     }
 
     /// Closes the write side of the tcp stream.
-    pub(crate) fn tcp_shutdown<F>(&self, id: Shared<ResourceId>, callback: F)
+    pub(crate) fn tcp_shutdown_write<F>(&self, id: Shared<ResourceId>, callback: F)
     where
         F: FnMut(LoopHandle) + 'static,
     {
-        let request = Request::TcpShutdown(id, Box::new(callback));
+        let request = Request::TcpShutdownWrite(id, Box::new(callback));
 
         self.request_sender.send(request).unwrap();
         self.request_queue_empty.set(false);
     }
 
-    /// Completely shutdowns the tcp stream.
+    /// Completely closes the tcp stream.
     pub(crate) fn tcp_close<F>(&self, id: Shared<ResourceId>, callback: F)
     where
         F: FnMut(LoopHandle) + 'static,
@@ -922,11 +944,11 @@ impl LoopHandle {
     }
 
     /// Stops a listener from accepting new connections.
-    pub(crate) fn tcp_stop<F>(&self, id: Shared<ResourceId>, callback: F)
+    pub(crate) fn tcp_listener_close<F>(&self, id: Shared<ResourceId>, callback: F)
     where
         F: FnMut(LoopHandle) + 'static,
     {
-        let request = Request::TcpListenStop(id, Box::new(callback));
+        let request = Request::TcpListenerClose(id, Box::new(callback));
 
         self.request_sender.send(request).unwrap();
         self.request_queue_empty.set(false);
@@ -1042,13 +1064,13 @@ impl LoopHandle {
     }
 
     /// Create a new TTY stream.
-    pub fn tty(&self) -> TTYHandle {
+    pub fn tty(&self) -> TtyHandle {
         // TTY resources are added to the resource map only after they start
         // reading terminal input, so for now we'll assign them a null ID.
         let id = Rc::new(Cell::new(DefaultKey::null()));
         let handle = self.clone();
 
-        TTYHandle {
+        TtyHandle {
             id,
             handle,
             stop_tx: None,
@@ -1056,11 +1078,21 @@ impl LoopHandle {
     }
 
     /// Starts reading from the TTY stream.
-    pub(crate) fn tty_read_start<F>(&self, id: Shared<ResourceId>, callback: F)
-    where
-        F: Fn(TTYHandle, Vec<u8>) + 'static,
-    {
-        todo!()
+    pub(crate) fn tty_read_start(&self, reader: TtyReader, stop_rx: mpsc::Receiver<()>) {
+        let boxed_reader = Box::new(reader);
+        let request = Request::TtyRead(boxed_reader, stop_rx);
+
+        self.request_sender.send(request).unwrap();
+        self.request_queue_empty.set(false);
+    }
+
+    /// Stops reading from a TTY stream.
+    pub(crate) fn tty_close(&self, id: Shared<ResourceId>) {
+        // Send a remove request.
+        let request = Request::TtyClose(id);
+
+        self.request_sender.send(request).unwrap();
+        self.request_queue_empty.set(false);
     }
 }
 

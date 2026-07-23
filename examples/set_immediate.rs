@@ -1,4 +1,7 @@
-extern crate crabuv;
+//! A check (set-immediate) example.
+//!
+//! Registers a one-shot check callback that runs after the poll phase and then
+//! removes itself.
 
 use crabuv::check::CheckHandle;
 use crabuv::EventLoop;
