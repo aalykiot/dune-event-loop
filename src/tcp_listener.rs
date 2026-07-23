@@ -103,7 +103,8 @@ impl TcpListenerHandle {
         F: Fn(LoopHandle) + 'static,
     {
         // Use the event-loop handle to close the tcp listener.
-        self.handle.tcp_listener_close(Rc::clone(&self.id), callback);
+        let id = Rc::clone(&self.id);
+        self.handle.tcp_listener_close(id, callback);
     }
 
     /// Returns a handle to the event-loop.

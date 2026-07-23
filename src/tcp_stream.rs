@@ -291,7 +291,8 @@ impl TcpStreamHandle {
         F: Fn(LoopHandle) + 'static,
     {
         // Use the event-loop handle to shutdown the write side of the stream.
-        self.handle.tcp_shutdown_write(Rc::clone(&self.id), callback);
+        let id = Rc::clone(&self.id);
+        self.handle.tcp_shutdown_write(id, callback);
     }
 
     /// Completely closes the tcp stream.
