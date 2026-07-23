@@ -7,11 +7,11 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 /// A type alias for resource identification.
-pub type ResourceId = DefaultKey;
-pub type Shared<T> = Rc<Cell<T>>;
+pub(crate) type ResourceId = DefaultKey;
+pub(crate) type Shared<T> = Rc<Cell<T>>;
 
 /// All objects that are tracked by the event-loop should implement the `Resource` trait.
-pub trait Resource: Downcast + 'static {
+pub(crate) trait Resource: Downcast + 'static {
     /// Runs any clean up actions.
     fn destroy(&mut self, _: LoopHandle) {}
 }

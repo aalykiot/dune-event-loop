@@ -1063,7 +1063,7 @@ impl LoopHandle {
         self.request_queue_empty.set(false);
     }
 
-    /// Create a new TTY stream.
+    /// Creates a TTY handle for interacting with the terminal.
     pub fn tty(&self) -> TtyHandle {
         // TTY resources are added to the resource map only after they start
         // reading terminal input, so for now we'll assign them a null ID.
@@ -1102,7 +1102,7 @@ pub struct LoopInterruptHandle {
 }
 
 impl LoopInterruptHandle {
-    // Interrupts the poll phase of the event-loop.
+    /// Interrupts the poll phase of the event-loop.
     pub fn interrupt(&self) {
         self.waker.wake().unwrap();
     }

@@ -11,13 +11,11 @@ use std::sync::mpsc;
 
 pub type OnReadCallback = Box<dyn FnMut(TtyHandle, Result<Vec<u8>>) + 'static>;
 
-/// Represents the terminal input mode.
+/// Terminal input mode.
 pub enum Mode {
-    /// Standard terminal mode where input is line-buffered and processed by
-    /// the terminal driver before being delivered to the application.
+    /// Line-buffered, processed by terminal driver.
     Normal,
-    /// Raw terminal mode where input is delivered directly to the application
-    /// without terminal driver processing.
+    /// Input delivered directly, bypassing terminal driver.
     Raw,
 }
 
@@ -100,7 +98,7 @@ impl TtyHandle {
         terminal::disable_raw_mode().map_err(Into::into)
     }
 
-    /// Set the TTY using the specified terminal mode.
+    /// Applies the specified terminal mode to the TTY.
     pub fn set_mode(&self, mode: Mode) -> Result<()> {
         match mode {
             Mode::Normal => self.disable_raw_mode(),
