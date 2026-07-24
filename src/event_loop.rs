@@ -337,9 +337,7 @@ impl EventLoop {
                 Request::TcpInit(stream) => self.tcp_stream_init(stream),
                 Request::TcpRead(id, callback) => self.tcp_stream_read_start(id, callback),
                 Request::TcpWrite(id, data, cb) => self.tcp_stream_write(id, data, cb),
-                Request::TcpShutdownWrite(id, callback) => {
-                    self.tcp_stream_shutdown_write(id, callback)
-                }
+                Request::TcpShutdownWrite(id, cb) => self.tcp_stream_shutdown_write(id, cb),
                 Request::TcpClose(id, callback) => self.tcp_stream_close(id, callback),
                 Request::TcpListen(listener) => self.tcp_listener_init(listener),
                 Request::TcpListenerClose(id, callback) => self.tcp_listener_close(id, callback),
@@ -696,8 +694,8 @@ impl EventLoop {
                 let mut buffer = [0u8; 1024];
                 let mut stdin = io::stdin().lock();
 
-                // Keep reading from stdin until the TTY handle
-                // signals that reading should stop.
+                // Keep reading from stdin until the TTY handle signals that
+                // reading should stop.
                 while stop_rx.try_recv().is_err() {
                     let result = stdin
                         .read(&mut buffer)
@@ -717,7 +715,11 @@ impl EventLoop {
 
     /// Stops reading from a TTY stream.
     fn tty_close(&mut self, id: Shared<ResourceId>) {
-        self.resources.remove(id.get());
+        // Send a stop signal to the thread that reads from stdin.
+        if let Some(mut resource) = self.resources.remove(id.get()) {
+            let tty = resource.downcast_mut::<TtyReader>().unwrap();
+            let _ = tty.stop_tx.send(());
+        }
     }
 
     /// Returns true if there is pending work still ongoing.
@@ -1070,11 +1072,7 @@ impl LoopHandle {
         let id = Rc::new(Cell::new(DefaultKey::null()));
         let handle = self.clone();
 
-        TtyHandle {
-            id,
-            handle,
-            stop_tx: None,
-        }
+        TtyHandle { id, handle }
     }
 
     /// Starts reading from the TTY stream.

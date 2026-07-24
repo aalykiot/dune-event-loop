@@ -31,7 +31,6 @@ impl TtyReader {
     pub fn handle(&self, handle: LoopHandle) -> TtyHandle {
         TtyHandle {
             id: Rc::clone(&self.id),
-            stop_tx: Some(self.stop_tx.clone()),
             handle,
         }
     }
@@ -44,8 +43,6 @@ impl Resource for TtyReader {}
 pub struct TtyHandle {
     /// A shared pointer to the resource ID of the tty.
     pub(crate) id: Shared<ResourceId>,
-    /// Sends a signal to stop the input-reading thread.
-    pub(crate) stop_tx: Option<mpsc::Sender<()>>,
     /// A handle to the event-loop.
     pub(crate) handle: LoopHandle,
 }
@@ -75,7 +72,7 @@ impl TtyHandle {
         let reader = TtyReader {
             id: Rc::clone(&self.id),
             on_read: Box::new(callback),
-            stop_tx: stop_tx.clone(),
+            stop_tx: stop_tx,
         };
 
         self.handle.tty_read_start(reader, stop_rx);
@@ -83,8 +80,6 @@ impl TtyHandle {
 
     /// Stops reading from the TTY.
     pub fn stop_reading(&self) {
-        // Send a stop signal to the thread that is reading from stdin.
-        self.stop_tx.as_ref().unwrap().send(()).unwrap();
         self.handle.tty_close(Rc::clone(&self.id));
     }
 
