@@ -98,16 +98,17 @@ pub struct TcpListenerHandle {
 
 impl TcpListenerHandle {
     /// Stops the server from accepting new tcp connections.
-    pub fn shutdown<F>(&self, callback: F)
+    pub fn close<F>(&self, callback: F)
     where
         F: Fn(LoopHandle) + 'static,
     {
-        // Use the event-loop handle to shutdown the tcp listenr.
-        self.handle.tcp_stop(Rc::clone(&self.id), callback);
+        // Use the event-loop handle to close the tcp listener.
+        let id = Rc::clone(&self.id);
+        self.handle.tcp_listener_close(id, callback);
     }
 
     /// Returns a handle to the event-loop.
-    pub fn get_loop(&self) -> LoopHandle {
+    pub fn loop_handle(&self) -> LoopHandle {
         self.handle.clone()
     }
 }

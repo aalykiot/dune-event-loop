@@ -1,4 +1,7 @@
-extern crate crabuv;
+//! A file-system watcher example.
+//!
+//! Watches the `./examples/` directory recursively for changes and prints
+//! events until a 10-second timeout stops the watcher.
 
 use anyhow::Result;
 use crabuv::fs::FsEvent;

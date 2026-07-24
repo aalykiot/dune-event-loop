@@ -1,4 +1,7 @@
-extern crate crabuv;
+//! A simple HTTP client example.
+//!
+//! Connects to info.cern.ch and fetches the homepage, printing the response
+//! to stdout.
 
 use anyhow::Result;
 use crabuv::tcp_stream::TcpStreamHandle;
@@ -28,7 +31,7 @@ fn main() {
     let on_connection = move |stream: Result<TcpStreamHandle>| match stream {
         Err(e) => eprintln!("{}", e),
         Ok(stream) => {
-            stream.set_read_callback(on_read);
+            stream.start_reading(on_read);
             stream.write(HTTP_REQUEST.to_vec(), on_write);
         }
     };
