@@ -68,11 +68,12 @@ impl TtyHandle {
     {
         // This channel is used to stop the worker thread reading from stdin.
         let (stop_tx, stop_rx) = mpsc::channel();
+        let on_read = Box::new(callback);
 
         let reader = TtyReader {
             id: Rc::clone(&self.id),
-            on_read: Box::new(callback),
-            stop_tx: stop_tx,
+            on_read,
+            stop_tx,
         };
 
         self.handle.tty_read_start(reader, stop_rx);

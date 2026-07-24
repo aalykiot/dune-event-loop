@@ -2,7 +2,7 @@
 name = "crabuv"
 description = "A multi-platform event loop library 🎡"
 authors = ["Alex Alikiotis <alexalikiotis5@gmail.com>"]
-version = "0.2.0"
+version = "0.3.0"
 repository = "https://gitlab.com/aalykiot/crabuv"
 license = "MIT"
 readme = "README.md"
